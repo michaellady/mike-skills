@@ -1,6 +1,6 @@
 ---
 name: adversarial-review
-description: Use when about to ship drafted artifacts (posts, code, docs, plans) and want a fresh-eyes audit against source material + skill rules before user review. Spawns a clean subagent with no compose-phase context. Returns structured PASS/FAIL verdicts with cited issues. Triggers — "adversarial review this", "audit my drafts", "fresh eyes on this", "review for fabrications", "Phase 4.5 review".
+description: Use when about to ship drafted artifacts (posts, code, docs, plans) and want a fresh-eyes audit against source material + skill rules before user review. Spawns a clean subagent with no compose-phase context. Returns structured PASS/FAIL verdicts with cited issues. Triggers — "adversarial review this", "audit my drafts", "fresh eyes on this", "review for fabrications", "adversarial review".
 user_invocable: true
 ---
 
@@ -8,7 +8,7 @@ user_invocable: true
 
 Spawn a fresh subagent to audit drafted artifacts against (a) source material and (b) skill rules BEFORE the user reviews them. The reviewer has no context from the compose phase — fresh eyes catch fabrications, rule violations, and over-claims that the composer rationalized away.
 
-This is the standalone, cross-project home for the **Phase 4.5 Adversarial Review pattern** documented in [`claude-social-media-skills/PATTERNS.md#pattern-adversarial-review-phase-45`](https://github.com/michaellady/claude-social-media-skills/blob/main/PATTERNS.md#pattern-adversarial-review-phase-45). Other skills can invoke this directly (or apply the pattern inline with their own subagent — both paths are equivalent and **return the canonical JSON shape defined below**).
+This is the standalone, cross-project home for the **Adversarial Review pattern** documented in [`claude-social-media-skills/PATTERNS.md#pattern-adversarial-review`](https://github.com/michaellady/claude-social-media-skills/blob/main/PATTERNS.md#pattern-adversarial-review). Other skills can invoke this directly (or apply the pattern inline with their own subagent — both paths are equivalent and **return the canonical JSON shape defined below**).
 
 ## Requirements
 
@@ -222,7 +222,7 @@ The skill cannot enforce this itself; if a caller wants the skill to know about 
 
 The pattern is cross-project: it applies anywhere drafts need pre-review (newsletter promotion, code review, plan-mode reviews, even other reviewers). Putting it in `mike-skills/` makes it invokable from any project; putting it in `claude-social-media-skills/` would lock it to that domain.
 
-The original Phase 4.5 documentation lives in `claude-social-media-skills/PATTERNS.md` as part of the closed-loop architecture. This skill is the standalone implementation that PATTERNS.md references as "Option A".
+The original adversarial review documentation lives in `claude-social-media-skills/PATTERNS.md` as part of the closed-loop architecture. This skill is the standalone implementation that PATTERNS.md references as "Option A".
 
 ## Common Mistakes
 
