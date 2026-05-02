@@ -110,7 +110,14 @@ func Run(ctx context.Context, opts Options) error {
 	args = append(args,
 		"--skip-git-repo-check",
 		string(prompt),
-		"-s", "read-only",
+	)
+	// `-s/--sandbox` is exec-fresh-only; `codex exec resume` inherits
+	// sandbox from the original session and rejects -s with
+	// "unexpected argument '-s' found".
+	if opts.ResumeID == "" {
+		args = append(args, "-s", "read-only")
+	}
+	args = append(args,
 		"-c", fmt.Sprintf(`model_reasoning_effort="%s"`, opts.Effort),
 		"--enable", "web_search_cached",
 		"--json",
