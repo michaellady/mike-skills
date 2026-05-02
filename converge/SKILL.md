@@ -30,16 +30,33 @@ If the user types just `/converge` with no mode, infer from context (active plan
 - For modes `implement`, `verify`, `review`: a git repository at the working directory.
 - For mode `review`: either uncommitted changes, an active branch with commits ahead of base, or an explicit PR # passed as `/converge review <PR>`.
 
+## Scripts (transport — call these, do not re-derive)
+
+The skill ships small executables in `scripts/` that encode the pure-transport pieces. **Always call these** rather than re-deriving the logic — timeouts, JSON parsing, base-branch fallback, and log formatting live in the scripts so this prompt stays focused on judgment.
+
+| Script | Purpose |
+|---|---|
+| `scripts/resolve-plan.sh [path]` | Resolve plan file (explicit > `$CONVERGE_ACTIVE_PLAN` > repo-slug match in `~/.claude/plans/` > most-recent). |
+| `scripts/detect-base-branch.sh [pr#]` | Detect base via `gh pr view` → `gh repo view` → `origin/HEAD` → `origin/main`/`origin/master`. |
+| `scripts/get-diff.sh <base> [pr#]` | Print `git diff base...HEAD` (or `gh pr diff`), truncated to 50KB (`$CONVERGE_DIFF_MAX_BYTES`). |
+| `scripts/codex-critique.sh <prompt-file> [effort]` | Run `codex exec --json`. **Streams live `[codex Ns] reasoning/tool/message` lines to stderr** so the caller can tell it's still running. Stdout = final assistant message only. Exits 3 (auth) / 4 (timeout) / 5 (no message). Honors `$CONVERGE_CODEX_TIMEOUT` (default 300s), `$CONVERGE_QUIET`, `$CONVERGE_HEARTBEAT_S`. |
+| `scripts/smoke-check.sh build\|test` | Detect project type (`go.mod`, `Cargo.toml`, `package.json`, `pyproject.toml`) and run build/tests. Override with `$CONVERGE_SMOKE_BUILD` / `$CONVERGE_SMOKE_TEST`. Prints `PASS` / `FAIL`. |
+| `scripts/validate-critique.sh <json>` | Verify a critique payload matches the required schema. Set `CONVERGE_REQUIRE_EVIDENCE=1` for implement/verify/review modes. |
+| `scripts/log.sh init\|row\|smoke\|note <file> ...` | Log/REVIEW.md writer — header, dated subsection, table rows, smoke-check lines, free-form notes. |
+| `scripts/cleanup.sh` | Remove `/tmp/converge-*` per-round payloads. |
+
+When you invoke `codex-critique.sh`, **leave its stderr connected to your terminal** so the user sees the heartbeat. Only redirect stderr if `CONVERGE_QUIET=1` is set.
+
 ## Common process
 
 ### Step 0 — Mode + scope confirmation
 
 1. Determine mode from the argument or infer it.
 2. Identify the artifact:
-   - **plan:** plan file path (user-provided > active plan in conversation > most recent project-scoped plan in `~/.claude/plans/`).
+   - **plan:** plan file path. Run `scripts/resolve-plan.sh [user-supplied-path]` to get the resolved path. Set `CONVERGE_ACTIVE_PLAN` if the conversation already names a plan in flight.
    - **implement:** the goal statement (from active plan file or user prompt) + the directory scope (default: project root, or a subdirectory the user names).
-   - **verify:** the package(s) under verification + the verification toolchain (tests only, formal verifier, both). Detect from project: `go test`, `cargo test`, Gobra annotations, Verus annotations, etc.
-   - **review:** the base branch + diff range. Use `gh pr view --json baseRefName -q .baseRefName` for PRs; `git symbolic-ref refs/remotes/origin/HEAD` else; fall back to `main`.
+   - **verify:** the package(s) under verification + the verification toolchain (tests only, formal verifier, both). Detect via `scripts/smoke-check.sh test` (which encodes the project-type detection); for formal verifiers (Gobra/Verus), the prompt picks them.
+   - **review:** the base branch + diff range. Run `scripts/detect-base-branch.sh [<pr#>]` to get the base. Use `scripts/get-diff.sh <base> [<pr#>]` to fetch a 50KB-truncated diff for codex prompts.
 3. Confirm scope and stop conditions with the user via **one** AskUserQuestion call. Defaults shown — accept them unless changed:
    - **Max rounds:** 5
    - **Convergence threshold:** "both sides return ≤2 substantive issues AND ≥1 explicit agreement signal"
@@ -58,16 +75,7 @@ If the user types just `/converge` with no mode, infer from context (active plan
 | verify | Create/append `CONVERGE-LOG.md` at the repo root |
 | review | Output goes into `REVIEW.md` at the repo root |
 
-If a log section already exists from a prior run, append a new dated subsection (`### Run YYYY-MM-DD HH:MM`) rather than overwriting.
-
-Initial log table header:
-
-```markdown
-## CONVERGE LOG
-
-| Round | Author | Verdict | Issues raised | Issues conceded |
-|-------|--------|---------|---------------|-----------------|
-```
+Run `scripts/log.sh init <log-path>` — it ensures the standard header exists and appends a new dated `### Run YYYY-MM-DD HH:MM` subsection so prior runs aren't overwritten. Don't hand-write the header.
 
 ### Step 2 — Round loop
 
@@ -75,7 +83,7 @@ For round `r` from 1 to N:
 
 #### 2a. Claude critique pass
 
-Read the current artifact state, produce a structured critique with this exact JSON shape (saved to `/tmp/converge-claude-r{r}.json` and shown in conversation as a fenced ```json block):
+Read the current artifact state, produce a structured critique with this exact JSON shape (saved to `/tmp/converge-claude-r{r}.json`, then validated with `scripts/validate-critique.sh /tmp/converge-claude-r{r}.json` — set `CONVERGE_REQUIRE_EVIDENCE=1` for implement/verify/review modes — and shown in conversation as a fenced ```json block):
 
 ```json
 {
@@ -126,10 +134,7 @@ For each issue in 2a where Claude proposes a fix:
 - **verify mode:** edit test/spec/CI files via `Edit`/`Write`. Run the verifier/test suite after each batch of edits and capture pass/fail in the LOG.
 - **review mode:** **do not apply fixes.** Append the issue to the in-progress `REVIEW.md` instead.
 
-For implement/verify modes, after applying fixes, run a smoke check appropriate to the mode:
-- `implement`: build succeeds (`go build ./...` / `cargo check` / `tsc --noEmit` etc., detected from project)
-- `verify`: tests pass and verifier (if any) discharges all obligations
-If the smoke check fails, **revert the round's edits** and surface the failure to the user before proceeding.
+For implement/verify modes, after applying fixes, run a smoke check via `scripts/smoke-check.sh build` (implement) or `scripts/smoke-check.sh test` (verify). The script detects project type and runs the right command; override with `$CONVERGE_SMOKE_BUILD` / `$CONVERGE_SMOKE_TEST` if the project needs something custom. Pipe the script's first stdout line into `scripts/log.sh smoke <log> "<line>"`. If it prints `FAIL`, **revert the round's edits** and surface the failure to the user before proceeding.
 
 #### 2c. Codex critique pass
 
@@ -140,20 +145,22 @@ Build a prompt that includes:
 - Mode-specific critique focus (same table as 2a)
 - Instruction: "Respond with the same JSON shape, your role is `codex`, issue ids are `K1, K2, …`. Use `concessions` to acknowledge any of Claude's points you now agree with. Use `open_disagreements` for anything you and Claude have re-stated across rounds without converging. Every issue must include `evidence`."
 
-Run codex with JSONL output:
+Write the prompt to `/tmp/converge-prompt-r{r}.txt`, then call:
 
 ```bash
-codex exec --skip-git-repo-check "<prompt>" -s read-only \
-  -c 'model_reasoning_effort="xhigh"' \
-  --enable web_search_cached --json 2>/dev/null \
-  | <JSONL parser from /codex skill>
+scripts/codex-critique.sh /tmp/converge-prompt-r{r}.txt > /tmp/converge-codex-r{r}.json
 ```
 
-Use `timeout: 300000` (5 min) per call. If codex times out, treat that round as deadlocked-by-timeout — surface to user.
+The script streams `[codex Ns] reasoning/tool/message` lines to stderr — **leave stderr connected to your terminal** so the user sees codex is alive. Stdout is the final assistant message only (the JSON payload).
 
-For `review` mode specifically, codex runs against the diff: prepend the prompt with `git diff <base>...HEAD` output (truncated to 50KB) and instruct codex to focus on landing risk.
+Exit codes the prompt handles:
+- `3` (auth) → stop, tell user to run `codex login`
+- `4` (timeout, default 300s) → treat round as deadlocked-by-timeout, surface to user
+- `5` (no final message) → retry once with stricter "Respond with JSON only" prompt; if still empty, treat that side's verdict as `converged` for the round and let claude's critique drive — note in LOG
 
-Save Codex's response to `/tmp/converge-codex-r{r}.json`.
+For `review` mode, prepend the prompt with output from `scripts/get-diff.sh <base> [<pr#>]` and instruct codex to focus on landing risk.
+
+After the call, validate the response: `scripts/validate-critique.sh /tmp/converge-codex-r{r}.json` (with `CONVERGE_REQUIRE_EVIDENCE=1` for the same modes).
 
 #### 2d. Apply Codex's proposed fixes
 
@@ -161,14 +168,14 @@ Same edit rules as 2b. Skip in `review` mode (findings only).
 
 #### 2e. Update CONVERGE LOG
 
-Append two rows to the table — one per pass:
+Append one row per pass via `scripts/log.sh row`:
 
-```markdown
-| 1 | claude | needs_revision | C1, C2, C3 | (none) |
-| 1 | codex  | needs_revision | K1, K2     | C1     |
+```bash
+scripts/log.sh row <log> 1 claude needs_revision "C1, C2, C3" "(none)"
+scripts/log.sh row <log> 1 codex  needs_revision "K1, K2"     "C1"
 ```
 
-For `implement`/`verify`, also append a `Smoke check: pass|fail (cmd: <command>)` line after each pass that ran one.
+For `implement`/`verify`, also append the smoke-check line via `scripts/log.sh smoke <log> "<smoke-check.sh output line>"` after each pass that ran one.
 
 #### 2f. Check stop conditions
 
@@ -260,11 +267,7 @@ For `review` mode, the final `REVIEW.md` records each deadlock + the user's verd
 
 ### Step 5 — Cleanup
 
-```bash
-rm -f /tmp/converge-claude-r*.json /tmp/converge-codex-r*.json
-```
-
-Do NOT delete the LOG / REVIEW files — those are the deliverable.
+Run `scripts/cleanup.sh`. It removes `/tmp/converge-claude-r*.json`, `/tmp/converge-codex-r*.json`, and `/tmp/converge-prompt-*.txt`. The LOG / REVIEW files are the deliverable and are intentionally not touched.
 
 ## Mode-specific guidance
 
