@@ -244,7 +244,7 @@ func streamFilter(r io.Reader, opts Options) (final, threadID string) {
 				final = ev.Text
 				logf("message: %s", trim(final, 80))
 			}
-		case ev.Type == "item.completed" && ev.Item.ItemType == "assistant_message":
+		case ev.Type == "item.completed" && (ev.Item.ItemType == "agent_message" || ev.Item.ItemType == "assistant_message"):
 			if ev.Item.Text != "" {
 				final = ev.Item.Text
 				logf("message: %s", trim(final, 80))
@@ -267,7 +267,7 @@ type event struct {
 	ThreadID string `json:"thread_id,omitempty"`
 	Text     string `json:"text,omitempty"`
 	Item     struct {
-		ItemType  string `json:"item_type"`
+		ItemType  string `json:"type"`
 		Text      string `json:"text"`
 		Summary   string `json:"summary"`
 		Tool      string `json:"tool"`
