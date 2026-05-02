@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/michaellady/mike-skills/blob/main/converge/schemas/critique.schema.json",
+  "title": "Converge Critique",
+  "description": "Per-round critique payload from claude or codex inside the /converge skill.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["round", "author", "mode", "verdict", "summary", "issues"],
+  "properties": {
+    "round": { "type": "integer", "minimum": 1 },
+    "author": { "type": "string", "enum": ["claude", "codex"] },
+    "mode":   { "type": "string", "enum": ["plan", "implement", "verify", "review"] },
+    "verdict": { "type": "string", "enum": ["needs_revision", "converged"] },
+    "summary": {
+      "type": "string", "minLength": 1,
+      "description": "One-line overall assessment — terse ship/no-ship feel; not a recap."
+    },
+    "issues": {
+      "type": "array",
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "severity", "title", "body", "confidence", "recommendation"],
+        "properties": {
+          "id":       { "type": "string", "pattern": "^[CK]\\d+$",
+                        "description": "Cn for claude, Kn for codex." },
+          "severity": { "type": "string", "enum": ["critical", "high", "medium", "low"] },
+          "title":    { "type": "string", "minLength": 1 },
+          "body":     { "type": "string", "minLength": 1,
+                        "description": "What can go wrong, why this code/plan path is vulnerable, and likely impact." },
+          "file":      { "type": "string", "minLength": 1,
+                         "description": "Required for implement/verify/review; optional for plan." },
+          "line_start":{ "type": "integer", "minimum": 1 },
+          "line_end":  { "type": "integer", "minimum": 1 },
+          "confidence":{ "type": "number", "minimum": 0, "maximum": 1,
+                         "description": "Honest probability the finding holds; lower for inferences." },
+          "recommendation": { "type": "string", "minLength": 1,
+                              "description": "Concrete edit / change. Not 'consider X'." }
+        }
+      }
+    },
+    "concessions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["on", "reason"],
+        "properties": {
+          "on":     { "type": "string", "description": "Other side's issue id (Cn or Kn)." },
+          "reason": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "open_disagreements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["with", "claude_position", "codex_position", "stuck_reason"],
+        "properties": {
+          "with":            { "type": "string" },
+          "claude_position": { "type": "string", "minLength": 1 },
+          "codex_position":  { "type": "string", "minLength": 1 },
+          "stuck_reason":    { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "next_steps": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Cross-cutting follow-ups that aren't tied to a single finding."
+    }
+  }
+}
