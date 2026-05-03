@@ -76,9 +76,13 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 	if model == "" {
 		model = os.Getenv("CONVERGE_AGENT_MODEL")
 	}
-	if model != "" {
-		args = append(args, "--model", model)
+	if model == "" {
+		// Cursor free plans reject any "named model" and require explicit
+		// --model auto. Paid plans accept named models too. "auto" is the
+		// safest default — works on both.
+		model = "auto"
 	}
+	args = append(args, "--model", model)
 	if opts.ResumeID != "" {
 		args = append(args, "--resume", opts.ResumeID)
 	}
