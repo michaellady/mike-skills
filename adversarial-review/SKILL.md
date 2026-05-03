@@ -36,6 +36,18 @@ cd <repo>/_shared/adversarial-review
 go build -o adversarial-review .
 ```
 
+**Verifying it works (REQUIRED after every change to provider code or after upgrading a provider CLI):**
+
+Pure-logic Go tests cover parse + merge + dedup but DO NOT invoke the actual `claude.Run()` / `codex.Run()` / `agent.Run()` / `gemini.Run()` CLI dispatch. End-to-end smoke is mandatory before claiming a transport change works:
+
+```bash
+_shared/adversarial-review/smoke.sh                # individually + N-way default + N-way all
+_shared/adversarial-review/smoke.sh claude         # just one provider
+_shared/adversarial-review/smoke.sh claude codex   # specific N-way combo
+```
+
+This caught the agent provider's `--model auto` requirement on free Cursor plans on 2026-05-03 (would have shipped broken otherwise — the Go tests passed).
+
 If a selected CLI is missing on the system (`command -v <name>` returns nothing) the binary degrades gracefully to a smaller reviewer set and lists the missing one(s) in `skipped: {<name>: "<reason>"}` in the response.
 
 **Why dual-reviewer (default):** different model families catch different failure modes. Claude tends to flag tone/voice drift, CTA violations, and brand-voice mismatch; Codex tends to flag logical inconsistency, unsupported quantitative claims, and structural rule violations. Two independent passes ≈ catches the union of failure modes a single reviewer would miss. Adding `agent` (Cursor) is a third independent perspective — useful for high-stakes drafts where the marginal cost of one more reviewer is acceptable.
