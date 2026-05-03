@@ -12,11 +12,14 @@ This is the standalone, cross-project home for the **Adversarial Review pattern*
 
 ## Requirements
 
-The skill is implemented as a Go binary (`adversarial-review`) that wraps the shared `mike-skills/llm-provider/` module. The binary fans out the SAME prompt to both reviewers in parallel and emits a merged JSON verdict.
+The skill is implemented as a Go binary (`adversarial-review`) that wraps the shared `mike-skills/llm-provider/` module. The binary fans out the SAME prompt to every selected reviewer in parallel and emits a merged JSON verdict.
 
-**On PATH:**
-- `claude` — Claude Code CLI (drives Reviewer A via `claude -p <prompt> --output-format stream-json`).
-- `codex` — OpenAI Codex CLI (drives Reviewer B via `codex exec`).
+**Default reviewers (`--reviewers claude,codex`):**
+- `claude` — Claude Code CLI (`claude -p <prompt> --output-format stream-json`).
+- `codex` — OpenAI Codex CLI (`codex exec`).
+
+**Opt-in reviewer (`--reviewers claude,codex,agent`):**
+- `agent` — Cursor `agent` CLI (`agent --print --output-format text <prompt>`). Registered alongside claude+codex but excluded from the default selection. Pass `--reviewers claude,codex,agent` to enable; tighter quotas per the Cursor plan, hence opt-in.
 
 **Build (one-time):**
 
@@ -32,9 +35,9 @@ cd <repo>/_shared/adversarial-review
 go build -o adversarial-review .
 ```
 
-If either CLI is missing on the system (`command -v <name>` returns nothing) the binary degrades gracefully to a single-reviewer audit and sets `claude_skipped: true` / `codex_skipped: true` in the response.
+If a selected CLI is missing on the system (`command -v <name>` returns nothing) the binary degrades gracefully to a smaller reviewer set and lists the missing one(s) in `skipped: {<name>: "<reason>"}` in the response.
 
-**Why dual-reviewer:** different model families catch different failure modes. Claude tends to flag tone/voice drift, CTA violations, and brand-voice mismatch; Codex tends to flag logical inconsistency, unsupported quantitative claims, and structural rule violations. Two independent passes ≈ catches the union of failure modes a single reviewer would miss.
+**Why dual-reviewer (default):** different model families catch different failure modes. Claude tends to flag tone/voice drift, CTA violations, and brand-voice mismatch; Codex tends to flag logical inconsistency, unsupported quantitative claims, and structural rule violations. Two independent passes ≈ catches the union of failure modes a single reviewer would miss. Adding `agent` (Cursor) is a third independent perspective — useful for high-stakes drafts where the marginal cost of one more reviewer is acceptable.
 
 ## When to Use
 
@@ -113,26 +116,32 @@ Return ONLY this JSON object, no surrounding prose:
 
 Do NOT include any compose-phase context (intent, history, prior drafts, why-the-composer-chose-this). Fresh eyes are the point.
 
-### Phase 3 — Run the dual-reviewer binary
+### Phase 3 — Run the multi-reviewer binary
 
-Pipe the assembled prompt into the `adversarial-review` binary. The binary spawns both `claude` and `codex` CLIs in parallel via the shared `mike-skills/llm-provider/` transport, captures each reviewer's JSON, and merges them.
+Pipe the assembled prompt into the `adversarial-review` binary. By default it spawns `claude` and `codex` CLIs in parallel via the shared `mike-skills/llm-provider/` transport, captures each reviewer's JSON, and merges them.
 
 ```bash
 printf '%s' "$ASSEMBLED_PROMPT" | <repo>/_shared/adversarial-review/adversarial-review
 ```
 
-Or with an on-disk prompt file:
+Or with an on-disk prompt file + a wider reviewer set:
 
 ```bash
-adversarial-review --prompt-file /tmp/review-prompt.txt --timeout 300
+adversarial-review --prompt-file /tmp/review-prompt.txt --timeout 300 --reviewers claude,codex,agent
 ```
 
 The binary handles, transparently:
-- Parallel dispatch of both reviewers (process management, timeouts, heartbeat suppression)
+- Parallel dispatch of every selected reviewer (process management, timeouts, heartbeat suppression)
 - JSON parsing with markdown-fence + surrounding-prose tolerance
-- Detection of either CLI missing on PATH → `claude_skipped: true` / `codex_skipped: true`
-- Merge rule (FAIL-OR + issue dedup + `[claude]/[codex]/[both]` attribution)
+- Detection of any selected CLI missing on PATH → entry in `skipped: {<name>: "<reason>"}`
+- Merge rule (FAIL-OR + issue clustering + `[r1+r2+...]` attribution by overlap)
 - Emission of the canonical merged JSON on stdout
+
+Flags:
+- `--reviewers <csv>` — which reviewers to dispatch (default `claude,codex`; opt-in `agent`)
+- `--prompt-file <path>` — read prompt from file instead of stdin
+- `--timeout <seconds>` — per-reviewer timeout (default 300)
+- `--quiet` — suppress provider heartbeat lines on stderr
 
 **Caller responsibility:** assemble the prompt body using the Phase 2 scaffold. The binary only owns transport + merge — composing the prompt (which source, which rules, which drafts) stays in the calling skill's prompt because that's the cognition.
 
@@ -142,15 +151,15 @@ Important: the source MUST be inline in the assembled prompt body so each review
 
 The binary emits exactly the canonical shape on stdout. Two reviewer-level failure modes are handled internally and surfaced via flags rather than escalated:
 
-- **Malformed JSON from a reviewer:** that reviewer's output is captured into `raw_response` and the corresponding `*_parse_error: true` flag is set. The binary still emits a merged verdict using whatever reviewers DID parse cleanly.
-- **Both reviewers parse_error or skipped:** binary emits `summary: "parse_error"` with empty verdicts, exits non-zero (2).
+- **Malformed JSON from a reviewer:** that reviewer's output is captured into `raw_response` and the reviewer's name is appended to `parse_error: ["<name>"]`. The binary still emits a merged verdict using whatever reviewers DID parse cleanly.
+- **All selected reviewers parse_error or skipped:** binary emits `summary: "parse_error"` with empty verdicts, exits non-zero (2).
 
-**Merge rule (when both reviewers returned valid verdicts):**
-- For each `draft_id`, the merged verdict is FAIL if EITHER reviewer marked it FAIL; PASS only if BOTH marked it PASS.
-- The merged `issues` array is the deduplicated union of both reviewers' issues for that draft. Prefix each issue with its source: `[claude] ...` or `[codex] ...`. Issues that both reviewers raise (substring overlap of ≥10 chars or ≥80% Jaccard on tokens) collapse to a single `[both] ...` entry.
+**Merge rule (when at least one reviewer returned a valid verdict):**
+- For each `draft_id`, the merged verdict is FAIL if ANY reviewer marked it FAIL; PASS only if every contributing reviewer marked it PASS.
+- The merged `issues` array clusters issues that overlap across reviewers (substring overlap of ≥12 chars, case-insensitive). Each cluster is rendered as `[r1+r2+...] <issue text>` listing every reviewer that raised it (in canonical reviewer order).
 - The merged `summary` is `all_pass` if every merged verdict is PASS, otherwise `some_fail`.
 
-Why merge this way (FAIL-OR rather than majority-vote): a single reviewer catching a real fabrication is more valuable than a second reviewer missing it. False positives are cheap (the composer revises and re-submits); false negatives are expensive (a fabricated quote ships).
+Why merge this way (FAIL-OR rather than majority-vote): a single reviewer catching a real fabrication is more valuable than other reviewers missing it. False positives are cheap (the composer revises and re-submits); false negatives are expensive (a fabricated quote ships).
 
 ### Phase 5 — Return verdicts to caller
 
@@ -173,7 +182,7 @@ Why merge this way (FAIL-OR rather than majority-vote): a single reviewer catchi
   "verdicts": [
     {"draft_id": "linkedin", "verdict": "PASS", "issues": []},
     {"draft_id": "facebook", "verdict": "FAIL", "issues": [
-      "[both] Contains 'every leader I respect keeps a token from a past reskilling on their desk' — unverifiable third-party claim, source doesn't make this claim",
+      "[claude+codex] Contains 'every leader I respect keeps a token from a past reskilling on their desk' — unverifiable third-party claim, source doesn't make this claim",
       "[codex] Stat '73% of teams adopt within 6 weeks' is not present in the source"
     ]}
   ],
@@ -181,29 +190,28 @@ Why merge this way (FAIL-OR rather than majority-vote): a single reviewer catchi
 }
 ```
 
-The `reviewers` field surfaces who actually contributed (drops `codex` if `codex_skipped: true`, drops `claude` only in the unusual case the Agent tool failed). Each issue is prefixed `[claude]`, `[codex]`, or `[both]` so the caller can see which reviewer flagged what.
+The `reviewers` field lists who actually contributed (skipped or parse-errored reviewers are excluded). Each issue is prefixed `[<r1>+<r2>+...]` listing every reviewer that raised it, so the caller can see consensus vs single-reviewer flags.
 
-**Hard-fail shape (input validation OR both reviewers malformed):**
+**Hard-fail shape (input validation OR every selected reviewer skipped/malformed):**
 
 ```json
 {
   "summary": "parse_error",
   "verdicts": [],
   "reviewers": [],
-  "error": "rules_list is empty",
-  "raw_response": "<raw text from reviewer(s) if Phase 4 failed; otherwise empty>"
+  "error": "no reviewers returned a usable verdict (all skipped, errored, or malformed JSON)",
+  "raw_response": "<concatenated raw text from any reviewer that failed Phase 4>"
 }
 ```
 
-**Degraded shape (codex unavailable on host):**
+**Degraded shape (one reviewer unavailable on host):**
 
 ```json
 {
   "summary": "all_pass",
   "verdicts": [...],
   "reviewers": ["claude"],
-  "codex_skipped": true,
-  "codex_skip_reason": "codex CLI not on PATH"
+  "skipped": {"codex": "codex CLI not on PATH"}
 }
 ```
 

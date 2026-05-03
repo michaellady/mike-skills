@@ -6,6 +6,7 @@ package dispatch
 import (
 	"fmt"
 
+	"github.com/michaellady/mike-skills/llm-provider/agent"
 	"github.com/michaellady/mike-skills/llm-provider/claude"
 	"github.com/michaellady/mike-skills/llm-provider/codex"
 	"github.com/michaellady/mike-skills/llm-provider/provider"
@@ -19,12 +20,14 @@ func Get(name string) (provider.Provider, error) {
 		return codex.New(), nil
 	case "claude":
 		return claude.New(), nil
+	case "agent":
+		return agent.New(), nil
 	default:
-		return nil, fmt.Errorf("unknown provider %q (supported: codex, claude)", name)
+		return nil, fmt.Errorf("unknown provider %q (supported: codex, claude, agent)", name)
 	}
 }
 
 // Names lists the registered provider names.
 func Names() []string {
-	return []string{"codex", "claude"}
+	return []string{"codex", "claude", "agent"}
 }
