@@ -6,13 +6,19 @@ user_invocable: true
 
 # adversarial-review
 
-Spawn a fresh subagent to audit drafted artifacts against (a) source material and (b) skill rules BEFORE the user reviews them. The reviewer has no context from the compose phase — fresh eyes catch fabrications, rule violations, and over-claims that the composer rationalized away.
+Spawn TWO fresh reviewers in parallel — a Claude subagent and a Codex `exec` run — to audit drafted artifacts against (a) source material and (b) skill rules BEFORE the user reviews them. Neither reviewer has context from the compose phase. Their verdicts are merged: any FAIL from either reviewer → FAIL.
 
 This is the standalone, cross-project home for the **Adversarial Review pattern** documented in [`claude-social-media-skills/PATTERNS.md#pattern-adversarial-review`](https://github.com/michaellady/claude-social-media-skills/blob/main/PATTERNS.md#pattern-adversarial-review). Other skills can invoke this directly (or apply the pattern inline with their own subagent — both paths are equivalent and **return the canonical JSON shape defined below**).
 
 ## Requirements
 
-This skill requires the **Task / Agent tool** (with `subagent_type: "general-purpose"`) to spawn the reviewer. If the runtime doesn't expose Agent, the caller should fall back to inline composition per PATTERNS.md "Option B" (construct the prompt and send it themselves).
+This skill requires:
+- The **Task / Agent tool** (with `subagent_type: "general-purpose"`) to spawn the Claude reviewer.
+- The **`codex` CLI** on PATH (`codex exec`) to spawn the Codex reviewer in parallel.
+
+If `codex` is unavailable on the system (`command -v codex` returns nothing) the skill degrades gracefully to a Claude-only review and notes `codex_skipped: true` in the response. If the Agent tool itself isn't available, the caller should fall back to inline composition per PATTERNS.md "Option B".
+
+**Why dual-reviewer:** different model families catch different failure modes. Claude tends to flag tone/voice drift, CTA violations, and brand-voice mismatch; Codex tends to flag logical inconsistency, unsupported quantitative claims, and structural rule violations. Two independent passes ≈ catches the union of failure modes a single reviewer would miss.
 
 ## When to Use
 
@@ -91,17 +97,40 @@ Return ONLY this JSON object, no surrounding prose:
 
 Do NOT include any compose-phase context (intent, history, prior drafts, why-the-composer-chose-this). Fresh eyes are the point.
 
-### Phase 3 — Spawn the reviewer subagent
+### Phase 3 — Spawn the reviewers (parallel: Claude + Codex)
 
-Use the `Agent` tool with `subagent_type: "general-purpose"`. Pass the assembled prompt as the agent's task input. The subagent runs with no inherited conversation context — it sees only the prompt.
+Run both reviewers in parallel. Both see the SAME assembled prompt from Phase 2.
 
-Important: don't pass the source via tool calls / file reads from the subagent's perspective. The source MUST be inline in the prompt body so the reviewer reads it as part of the audit, not separately. For very large source content (>100KB), warn the caller — the prompt will be expensive but should still work.
+**Reviewer A — Claude subagent.** Use the `Agent` tool with `subagent_type: "general-purpose"`. Pass the assembled prompt as the agent's task input. The subagent runs with no inherited conversation context.
 
-### Phase 4 — Parse the verdict JSON
+**Reviewer B — Codex `exec`.** Spawn `codex exec` in the same conversation turn (parallel to the Agent call). Pipe the assembled prompt via stdin so the prompt body is preserved exactly:
 
-Expect exactly the JSON shape from the Phase 2 scaffold. Two failure modes:
-- **Malformed JSON:** retry once with the explicit reminder appended ("return ONLY the JSON object, no surrounding prose, no markdown code fences"). If still malformed, return the **`parse_error` shape** (see Phase 5).
+```bash
+cat <<'PROMPT' | codex exec --skip-git-repo-check -
+<assembled prompt from Phase 2>
+PROMPT
+```
+
+(Use a unique HEREDOC sentinel if the prompt body contains the literal `PROMPT`.) Codex returns plain text on stdout; expect the same JSON shape the prompt requests. If the user has a preferred Codex model configured in `~/.codex/config.toml`, that wins; otherwise default model.
+
+**If `codex` is missing on the host** (`command -v codex` returns empty), skip Reviewer B, run only Reviewer A, and set `codex_skipped: true` in the response.
+
+Important: don't pass the source via tool calls / file reads from either reviewer's perspective. The source MUST be inline in the prompt body so each reviewer reads it as part of the audit, not separately. For very large source content (>100KB), warn the caller — the prompts will be expensive but should still work.
+
+### Phase 4 — Parse and merge the verdicts
+
+Each reviewer returns the JSON shape from the Phase 2 scaffold. Two failure modes per reviewer:
+- **Malformed JSON:** retry once with the explicit reminder appended ("return ONLY the JSON object, no surrounding prose, no markdown code fences"). If still malformed, treat that reviewer as `parse_error` and continue with the other.
 - **Missing required fields** (no `summary`, no `verdicts`, verdicts missing `draft_id`/`verdict`/`issues`): same retry-once policy.
+
+If BOTH reviewers `parse_error`, return the `parse_error` shape (Phase 5). If only ONE parses, proceed with that reviewer's verdicts and set `codex_parse_error: true` (or `claude_parse_error: true`) in the response.
+
+**Merge rule (when both reviewers returned valid verdicts):**
+- For each `draft_id`, the merged verdict is FAIL if EITHER reviewer marked it FAIL; PASS only if BOTH marked it PASS.
+- The merged `issues` array is the deduplicated union of both reviewers' issues for that draft. Prefix each issue with its source: `[claude] ...` or `[codex] ...`. Issues that both reviewers raise (substring overlap of ≥10 chars or ≥80% Jaccard on tokens) collapse to a single `[both] ...` entry.
+- The merged `summary` is `all_pass` if every merged verdict is PASS, otherwise `some_fail`.
+
+Why merge this way (FAIL-OR rather than majority-vote): a single reviewer catching a real fabrication is more valuable than a second reviewer missing it. False positives are cheap (the composer revises and re-submits); false negatives are expensive (a fabricated quote ships).
 
 ### Phase 5 — Return verdicts to caller
 
@@ -113,7 +142,8 @@ Expect exactly the JSON shape from the Phase 2 scaffold. Two failure modes:
   "verdicts": [
     {"draft_id": "linkedin", "verdict": "PASS", "issues": []},
     {"draft_id": "facebook", "verdict": "PASS", "issues": []}
-  ]
+  ],
+  "reviewers": ["claude", "codex"]
 }
 ```
 
@@ -123,20 +153,37 @@ Expect exactly the JSON shape from the Phase 2 scaffold. Two failure modes:
   "verdicts": [
     {"draft_id": "linkedin", "verdict": "PASS", "issues": []},
     {"draft_id": "facebook", "verdict": "FAIL", "issues": [
-      "Contains 'every leader I respect keeps a token from a past reskilling on their desk' — unverifiable third-party claim, source doesn't make this claim"
+      "[both] Contains 'every leader I respect keeps a token from a past reskilling on their desk' — unverifiable third-party claim, source doesn't make this claim",
+      "[codex] Stat '73% of teams adopt within 6 weeks' is not present in the source"
     ]}
-  ]
+  ],
+  "reviewers": ["claude", "codex"]
 }
 ```
 
-**Hard-fail shape (input validation OR malformed reviewer response):**
+The `reviewers` field surfaces who actually contributed (drops `codex` if `codex_skipped: true`, drops `claude` only in the unusual case the Agent tool failed). Each issue is prefixed `[claude]`, `[codex]`, or `[both]` so the caller can see which reviewer flagged what.
+
+**Hard-fail shape (input validation OR both reviewers malformed):**
 
 ```json
 {
   "summary": "parse_error",
   "verdicts": [],
+  "reviewers": [],
   "error": "rules_list is empty",
-  "raw_response": "<raw text from reviewer if Phase 4 failed; otherwise empty>"
+  "raw_response": "<raw text from reviewer(s) if Phase 4 failed; otherwise empty>"
+}
+```
+
+**Degraded shape (codex unavailable on host):**
+
+```json
+{
+  "summary": "all_pass",
+  "verdicts": [...],
+  "reviewers": ["claude"],
+  "codex_skipped": true,
+  "codex_skip_reason": "codex CLI not on PATH"
 }
 ```
 
