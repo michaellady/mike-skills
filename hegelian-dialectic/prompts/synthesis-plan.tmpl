@@ -1,0 +1,79 @@
+<role>
+You are performing the SYNTHESIS stage of a Hegelian dialectic on a written plan.
+You have read the thesis (the current plan) and the antithesis (the strongest opposing case constructed against it).
+Your job is to produce an integrated synthesized plan that transcends both — preserves what survives the antithesis, incorporates what the antithesis got right, and frames a single coherent forward path.
+</role>
+
+<task>
+Mode: plan.
+Round: {{ROUND}} of {{MAX_ROUNDS}}.
+Read the thesis and antithesis below. Produce a synthesis: the integrated revised plan position. Frame it as a one-paragraph stance (in `summary`) plus a concrete action list (in `next_steps[]`) describing the edits needed to evolve the plan from thesis-state to synthesized-state.
+{{IF_RESUME}}This is a follow-up turn on the same thread. Focus only on the delta from the previous synthesis.{{ENDIF_RESUME}}
+</task>
+
+<synthesis_stance>
+A good synthesis:
+1. Preserves what is sound in the thesis (don't throw away good ideas)
+2. Incorporates what the antithesis got right (don't ignore valid opposition)
+3. Resolves contradictions by finding a higher-order frame, not by averaging
+4. Is more specific than either input, not less — synthesis ≠ compromise
+5. Names what is conceded from each side, explicitly
+
+If the antithesis didn't surface anything substantive, set verdict=converged with a near-empty issues array; the synthesis is "the thesis stands."
+If the antithesis surfaced opposition that cannot be reconciled — the thesis and antithesis are both internally coherent but mutually exclusive — note it as an `open_disagreements[]` entry; the synthesis cannot transcend a true taste call.
+</synthesis_stance>
+
+<output_structure>
+- `summary` (required): one paragraph (3-5 sentences) describing the synthesized plan position. This IS the synthesis. Write it as a forward-looking statement, not a recap.
+- `next_steps[]` (required when verdict=needs_revision): the concrete plan edits to apply. Each item should be specific enough that an editor can apply it. Format: "Edit section X to <change>" or "Add subsection Y covering <topic>" or "Remove paragraph Z because <reason from antithesis>."
+- `concessions[]`: one entry per finding from the other side that was incorporated. `on` = the issue id (Cn from prior Claude critiques, Kn from this round's antithesis). `reason` = why this concession survived synthesis.
+- `issues[]`: residual tensions that synthesis could not resolve. Should be near-empty for a strong synthesis. Each issue here is a tension still in play, with severity reflecting how blocking it is.
+- `open_disagreements[]`: items where thesis and antithesis are both coherent but mutually exclusive (rare).
+- `verdict`:
+  - `converged` if the synthesis fully resolves the antithesis's opposition (no substantive issues remain, no open disagreements)
+  - `needs_revision` if substantial movement is still needed in the next round
+</output_structure>
+
+<calibration_rules>
+A synthesis with empty `next_steps[]` and verdict=needs_revision is incoherent — fix one or the other.
+A synthesis with verdict=converged but non-empty critical issues is incoherent — fix one or the other.
+Cap issues at 5.
+Don't fabricate concessions for politeness; only list what was actually incorporated.
+</calibration_rules>
+
+<grounding_rules>
+Cite plan sections (or line ranges via `line_start`/`line_end`) when referring to specific parts.
+Don't invent plan content that isn't in the thesis or proposed by the antithesis.
+</grounding_rules>
+
+<structured_output_contract>
+Return ONLY valid JSON conforming to converge/schemas/critique.schema.json.
+No prose, no markdown fences, no leading/trailing text.
+Set `author`={{AUTHOR}}, `mode`="plan", `round`={{ROUND}}.
+Issue ids must be C1, C2, ... if author=claude; K1, K2, ... if author=codex.
+The schema has `additionalProperties: false`; do not add custom fields. The synthesized position is carried in `summary` + `next_steps[]`.
+</structured_output_contract>
+
+<final_check>
+- `summary` reads as an integrated forward-looking position, not a recap
+- `next_steps[]` are concrete and applicable
+- `concessions[]` honestly reflect what was incorporated from the other side
+- `verdict` is internally consistent with `issues[]` and `next_steps[]`
+- Output is a single JSON object validating against the schema
+</final_check>
+
+<prior_log>
+{{PRIOR_LOG}}
+</prior_log>
+
+<thesis>
+{{THESIS}}
+</thesis>
+
+<antithesis>
+{{ANTITHESIS}}
+</antithesis>
+
+<plan>
+{{ARTIFACT}}
+</plan>

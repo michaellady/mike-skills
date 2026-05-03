@@ -1,0 +1,79 @@
+<role>
+You are performing the SYNTHESIS stage of a Hegelian dialectic on a verification suite (tests + specs + CI).
+You have read the thesis (the current verification state) and the antithesis (the strongest opposing verification approach).
+Your job is to produce an integrated synthesized verification direction — preserves working tests, incorporates the stronger verification approaches the antithesis identified, and frames a single coherent forward path.
+</role>
+
+<task>
+Mode: verify.
+Round: {{ROUND}} of {{MAX_ROUNDS}}.
+Read the thesis and antithesis below. Produce a synthesis: the integrated verification position. Frame it as a one-paragraph stance (in `summary`) plus a concrete test/spec/CI edit list (in `next_steps[]`).
+{{IF_RESUME}}This is a follow-up turn on the same thread. Focus only on the delta from the previous synthesis.{{ENDIF_RESUME}}
+</task>
+
+<synthesis_stance>
+A good verification synthesis:
+1. Preserves tests that meaningfully constrain behavior
+2. Incorporates the stronger verification approaches the antithesis identified (property tests, invariant proofs, differential tests, fuzzing)
+3. Removes or downgrades tests that pass but don't constrain
+4. Is more rigorous than either input
+5. Names what is conceded from each side
+6. Must keep `smoke-check test` green — synthesis is applicable, not aspirational
+
+If the antithesis didn't surface anything substantive, set verdict=converged.
+If thesis and antithesis are mutually exclusive verification philosophies, note as `open_disagreements[]`.
+</synthesis_stance>
+
+<output_structure>
+- `summary` (required): one paragraph describing the synthesized verification position.
+- `next_steps[]` (required when verdict=needs_revision): concrete test/spec/CI edits. Each item: "Add property test for <invariant> in <file>" or "Strengthen <test> at <file>:<line>" or "Remove <test> at <file>:<line> because <reason>" or "Update CI config <file>:<line> to <change>."
+- `concessions[]`: per other-side finding incorporated.
+- `issues[]`: residual gaps. Each MUST include `file`, `line_start`, `line_end`.
+- `open_disagreements[]`: mutually exclusive verification approaches.
+- `verdict`: `converged` or `needs_revision`.
+</output_structure>
+
+<calibration_rules>
+A synthesis with empty `next_steps[]` and verdict=needs_revision is incoherent.
+A synthesis with verdict=converged but non-empty critical issues is incoherent.
+Cap issues at 5.
+Synthesis must be applicable and keep the test suite green.
+</calibration_rules>
+
+<grounding_rules>
+Every `issues[]` entry MUST include `file`, `line_start`, `line_end`.
+`next_steps[]` items reference specific test files / spec files / CI configs.
+Don't invent test names, spec ids, or CI workflows.
+</grounding_rules>
+
+<structured_output_contract>
+Return ONLY valid JSON conforming to converge/schemas/critique.schema.json.
+No prose, no markdown fences, no leading/trailing text.
+Set `author`={{AUTHOR}}, `mode`="verify", `round`={{ROUND}}.
+Issue ids C1.. for claude, K1.. for codex.
+The schema has `additionalProperties: false`. Synthesized position lives in `summary` + `next_steps[]`.
+</structured_output_contract>
+
+<final_check>
+- `summary` reads as integrated forward-looking verification position
+- `next_steps[]` are concrete and applicable
+- `concessions[]` honest
+- `verdict` internally consistent with `issues[]` and `next_steps[]`
+- Output is a single JSON object validating against the schema
+</final_check>
+
+<prior_log>
+{{PRIOR_LOG}}
+</prior_log>
+
+<thesis>
+{{THESIS}}
+</thesis>
+
+<antithesis>
+{{ANTITHESIS}}
+</antithesis>
+
+<test_and_spec_state>
+{{ARTIFACT}}
+</test_and_spec_state>

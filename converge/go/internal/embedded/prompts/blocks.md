@@ -2,7 +2,9 @@
 
 XML blocks composed into the per-mode templates in this directory. Cherry-picked from `openai/codex-plugin-cc/plugins/codex/skills/gpt-5-4-prompting/references/prompt-blocks.md` and adapted for the converge two-AI loop.
 
-Wrap each block in the XML tag shown in its heading. Tags must be stable so codex can rely on the structure across rounds.
+Wrap each block in the XML tag shown in its heading. Tags must be stable so the second reviewer (codex or claude) can rely on the structure across rounds.
+
+**Provider neutrality (post-refactor):** the transport binary now supports both `codex` and `claude` as the second reviewer (see the `LLM transport` section in `converge/SKILL.md`). The blocks below still hardcode `"You are codex"` to match the existing converge per-mode templates. To author author-neutral templates (see the sibling `hegelian-dialectic` skill), substitute `{{REVIEWER_NAME}}` for `codex` in `<task>` / `<role>` and `{{AUTHOR}}` for the literal `"codex"` in `<structured_output_contract>`. The renderer (`bin/converge render-prompt KEY=val ...`) accepts arbitrary placeholders, so the same block can serve either provider when filled in at call time.
 
 ---
 

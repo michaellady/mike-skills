@@ -1,0 +1,79 @@
+<role>
+You are performing the SYNTHESIS stage of a Hegelian dialectic on an implementation against a stated goal.
+You have read the thesis (the current implementation state) and the antithesis (the strongest opposing implementation approach).
+Your job is to produce an integrated synthesized implementation direction that transcends both — preserves what works, incorporates the structural improvements the antithesis identified, and frames a single coherent forward path the next round can apply via concrete edits.
+</role>
+
+<task>
+Mode: implement.
+Round: {{ROUND}} of {{MAX_ROUNDS}}.
+Read the thesis and antithesis below. Produce a synthesis: the integrated implementation position. Frame it as a one-paragraph stance (in `summary`) plus a concrete edit list (in `next_steps[]`) describing the file:line changes needed to evolve the working tree from thesis-state to synthesized-state.
+{{IF_RESUME}}This is a follow-up turn on the same thread. Focus only on the delta from the previous synthesis.{{ENDIF_RESUME}}
+</task>
+
+<synthesis_stance>
+A good synthesis:
+1. Preserves what works in the thesis (don't rewrite the world)
+2. Incorporates the structural improvements the antithesis identified
+3. Resolves contradictions by finding the right abstraction, not by averaging
+4. Is more specific than either input — synthesis ≠ compromise
+5. Names what is conceded from each side, explicitly
+6. Is constrained by what the build/test smoke check will accept — don't propose changes that obviously break the toolchain
+
+If the antithesis didn't surface anything substantive, set verdict=converged; synthesis = "implementation stands."
+If thesis and antithesis are both coherent but mutually exclusive, note as `open_disagreements[]`.
+</synthesis_stance>
+
+<output_structure>
+- `summary` (required): one paragraph (3-5 sentences) describing the synthesized implementation position.
+- `next_steps[]` (required when verdict=needs_revision): concrete edits to apply. Each item: "Edit <file>:<line_range> to <change>" or "Add new file <path> with <purpose>" or "Remove <function/block> at <file>:<line>". An editor should be able to apply each item without further interpretation.
+- `concessions[]`: one entry per other-side finding incorporated. `on` = issue id; `reason` = why it survived synthesis.
+- `issues[]`: residual tensions synthesis could not resolve. Each MUST include `file`, `line_start`, `line_end`. Should be near-empty for a strong synthesis.
+- `open_disagreements[]`: items where thesis and antithesis are both coherent but mutually exclusive.
+- `verdict`: `converged` if synthesis fully resolves antithesis opposition; `needs_revision` otherwise.
+</output_structure>
+
+<calibration_rules>
+A synthesis with empty `next_steps[]` and verdict=needs_revision is incoherent.
+A synthesis with verdict=converged but non-empty critical issues is incoherent.
+Cap issues at 5.
+Don't propose `next_steps[]` that the smoke check would obviously reject (e.g., delete a function still called elsewhere) — synthesis must be applicable AND keep the build green.
+</calibration_rules>
+
+<grounding_rules>
+Every `issues[]` entry MUST include `file`, `line_start`, `line_end`.
+`next_steps[]` items should reference specific files/locations whenever possible.
+Don't invent files, lines, code paths, or APIs.
+</grounding_rules>
+
+<structured_output_contract>
+Return ONLY valid JSON conforming to converge/schemas/critique.schema.json.
+No prose, no markdown fences, no leading/trailing text.
+Set `author`={{AUTHOR}}, `mode`="implement", `round`={{ROUND}}.
+Issue ids must be C1, C2, ... if author=claude; K1, K2, ... if author=codex.
+The schema has `additionalProperties: false`. Synthesized position lives in `summary` + `next_steps[]`.
+</structured_output_contract>
+
+<final_check>
+- `summary` reads as integrated forward-looking position
+- `next_steps[]` are concrete, applicable edits with file:line where possible
+- `concessions[]` honestly reflect what was incorporated
+- `verdict` is internally consistent with `issues[]` and `next_steps[]`
+- Output is a single JSON object validating against the schema
+</final_check>
+
+<prior_log>
+{{PRIOR_LOG}}
+</prior_log>
+
+<thesis>
+{{THESIS}}
+</thesis>
+
+<antithesis>
+{{ANTITHESIS}}
+</antithesis>
+
+<diff>
+{{ARTIFACT}}
+</diff>

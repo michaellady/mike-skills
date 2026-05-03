@@ -10,12 +10,13 @@ import (
 	"strconv"
 
 	"github.com/michaellady/mike-skills/converge/internal/cleanup"
-	"github.com/michaellady/mike-skills/converge/internal/codex"
+	"github.com/michaellady/mike-skills/converge/internal/dispatch"
 	"github.com/michaellady/mike-skills/converge/internal/embedded"
 	"github.com/michaellady/mike-skills/converge/internal/gitops"
 	"github.com/michaellady/mike-skills/converge/internal/logwriter"
 	"github.com/michaellady/mike-skills/converge/internal/plan"
 	"github.com/michaellady/mike-skills/converge/internal/preflight"
+	"github.com/michaellady/mike-skills/converge/internal/provider"
 	"github.com/michaellady/mike-skills/converge/internal/schema"
 	"github.com/michaellady/mike-skills/converge/internal/smoke"
 	"github.com/michaellady/mike-skills/converge/internal/status"
@@ -51,7 +52,16 @@ func Run(args []string) int {
 	case "status":
 		return runStatus(rest)
 	case "codex-critique":
-		return runCodex(rest)
+		return runLLM(rest, "codex")
+	case "claude-critique":
+		return runLLM(rest, "claude")
+	case "llm-critique":
+		return runLLM(rest, "")
+	case "list-providers":
+		for _, n := range dispatch.Names() {
+			fmt.Println(n)
+		}
+		return 0
 	case "list-modes":
 		for _, m := range embedded.ListEmbeddedTemplates() {
 			fmt.Println(m)
@@ -96,20 +106,28 @@ Prompt + schema
                                          (set CONVERGE_REQUIRE_EVIDENCE=1 for
                                          implement/verify/review)
 
-Codex transport
-  codex-critique [--resume <thread-id>] <prompt-file> [effort]
-                                         Run codex exec, stream events to
+LLM transport (codex or claude)
+  llm-critique --provider {codex|claude} [--resume <id>] [--model <m>]
+               <prompt-file> [effort]    Run the chosen LLM, stream events to
                                          stderr, write final message to stdout.
-                                         Captures thread id for round-1 resume.
+                                         Captures session/thread id on round 1.
+  codex-critique [--resume <thread-id>] [--model <m>] <prompt-file> [effort]
+                                         Alias for llm-critique --provider codex.
+                                         Backward-compatible with pre-refactor
+                                         callers.
+  claude-critique [--resume <session-id>] [--model <m>] <prompt-file> [effort]
+                                         Alias for llm-critique --provider claude.
 
 Inspection
   list-modes                             List embedded prompt template modes
+  list-providers                         List available LLM providers
   help                                   This message
 
-Env vars: CONVERGE_CODEX_TIMEOUT, CONVERGE_QUIET, CONVERGE_HEARTBEAT_S,
-CONVERGE_THREAD_OUT, CONVERGE_DIFF_MAX_BYTES, CONVERGE_REQUIRE_EVIDENCE,
-CONVERGE_SCHEMA, CONVERGE_PROMPTS_DIR, CONVERGE_STATUS_DIR, CONVERGE_ACTIVE_PLAN,
-CONVERGE_SMOKE_BUILD, CONVERGE_SMOKE_TEST, CLAUDE_PLANS_DIR, CODEX_HOME.
+Env vars: CONVERGE_CODEX_TIMEOUT, CONVERGE_CLAUDE_TIMEOUT, CONVERGE_CLAUDE_MODEL,
+CONVERGE_QUIET, CONVERGE_HEARTBEAT_S, CONVERGE_THREAD_OUT, CONVERGE_DIFF_MAX_BYTES,
+CONVERGE_REQUIRE_EVIDENCE, CONVERGE_SCHEMA, CONVERGE_PROMPTS_DIR,
+CONVERGE_STATUS_DIR, CONVERGE_ACTIVE_PLAN, CONVERGE_SMOKE_BUILD,
+CONVERGE_SMOKE_TEST, CLAUDE_PLANS_DIR, CODEX_HOME.
 `)
 }
 
@@ -397,34 +415,75 @@ func runStatus(args []string) int {
 	return 0
 }
 
-func runCodex(args []string) int {
-	opts := codex.Options{}
-	if len(args) > 0 && args[0] == "--resume" {
-		if len(args) < 3 {
-			fmt.Fprintln(os.Stderr, "usage: codex-critique --resume <thread-id> <prompt-file> [effort]")
-			return 2
+// runLLM dispatches a critique call to the chosen provider. providerHint is
+// the provider name implied by the subcommand alias (codex-critique →
+// "codex", claude-critique → "claude", llm-critique → "" meaning require
+// --provider).
+func runLLM(args []string, providerHint string) int {
+	subcmd := providerHint + "-critique"
+	if providerHint == "" {
+		subcmd = "llm-critique"
+	}
+	opts := provider.Options{}
+	providerName := providerHint
+
+	for len(args) > 0 {
+		switch args[0] {
+		case "--provider":
+			if len(args) < 2 {
+				fmt.Fprintf(os.Stderr, "usage: %s --provider {codex|claude} [--resume <id>] [--model <m>] <prompt-file> [effort]\n", subcmd)
+				return 2
+			}
+			providerName = args[1]
+			args = args[2:]
+		case "--resume":
+			if len(args) < 2 {
+				fmt.Fprintf(os.Stderr, "usage: %s [--resume <id>] [--model <m>] <prompt-file> [effort]\n", subcmd)
+				return 2
+			}
+			opts.ResumeID = args[1]
+			args = args[2:]
+		case "--model":
+			if len(args) < 2 {
+				fmt.Fprintf(os.Stderr, "usage: %s [--resume <id>] [--model <m>] <prompt-file> [effort]\n", subcmd)
+				return 2
+			}
+			opts.Model = args[1]
+			args = args[2:]
+		default:
+			// First non-flag arg ends the option block.
+			goto positional
 		}
-		opts.ResumeID = args[1]
-		args = args[2:]
+	}
+positional:
+	if providerName == "" {
+		fmt.Fprintln(os.Stderr, "llm-critique: --provider is required (codex|claude); or use codex-critique / claude-critique")
+		return 2
 	}
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: codex-critique [--resume <tid>] <prompt-file> [effort]")
+		fmt.Fprintf(os.Stderr, "usage: %s [--resume <id>] [--model <m>] <prompt-file> [effort]\n", subcmd)
 		return 2
 	}
 	opts.PromptFile = args[0]
 	if len(args) > 1 {
 		opts.Effort = args[1]
 	}
-	err := codex.Run(context.Background(), opts)
+
+	prov, err := dispatch.Get(providerName)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", subcmd, err)
+		return 2
+	}
+	err = prov.Run(context.Background(), opts)
 	if err == nil {
 		return 0
 	}
-	var ce *codex.Error
-	if errors.As(err, &ce) {
-		fmt.Fprintln(os.Stderr, "codex-critique:", ce.Err)
-		return ce.Code
+	var pe *provider.Error
+	if errors.As(err, &pe) {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", subcmd, pe.Err)
+		return pe.Code
 	}
-	fmt.Fprintln(os.Stderr, "codex-critique:", err)
+	fmt.Fprintf(os.Stderr, "%s: %v\n", subcmd, err)
 	return 1
 }
 

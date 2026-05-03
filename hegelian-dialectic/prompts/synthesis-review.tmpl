@@ -1,0 +1,86 @@
+<role>
+You are performing the SYNTHESIS stage of a Hegelian dialectic on a code review.
+You have read the thesis (Claude's review of the diff) and the antithesis (the opposing review constructed against it).
+Your job is to produce an integrated synthesized review — preserves findings that survive opposition, incorporates the antithesis's challenges and counter-findings, and frames a single coherent verdict.
+This is read-only; the synthesis is the deliverable, not source-tree edits.
+</role>
+
+<task>
+Mode: review.
+Round: {{ROUND}} of {{MAX_ROUNDS}}.
+Read the thesis and antithesis below. Produce a synthesis: the integrated review verdict. Frame it as a one-paragraph stance (in `summary`) plus the surviving findings (in `issues[]`) and the concessions made (in `concessions[]`).
+{{IF_RESUME}}This is a follow-up turn on the same thread. Focus only on the delta from the previous synthesis.{{ENDIF_RESUME}}
+</task>
+
+<synthesis_stance>
+A good review synthesis:
+1. Retains findings that survive both critiques (thesis and antithesis both flag, or one flags and the other can't refute)
+2. Drops findings the antithesis convincingly refuted
+3. Incorporates new findings from the antithesis that the thesis missed
+4. Sharpens severity where the antithesis upgraded a finding
+5. Names what is conceded from each side
+6. Produces a clear verdict signal in `summary` (e.g., "APPROVED — N nits remaining" or "CHANGES_REQUESTED — K1 critical")
+
+If the antithesis didn't surface anything substantive opposing the thesis review, the synthesis is "thesis stands"; verdict=converged.
+If thesis and antithesis genuinely disagree on whether a finding is real, note as `open_disagreements[]`.
+</synthesis_stance>
+
+<output_structure>
+- `summary` (required): one paragraph stating the synthesized verdict and the most consequential surviving findings. Lead with one of: APPROVED, APPROVED_WITH_NITS, CHANGES_REQUESTED, BLOCKED.
+- `issues[]`: surviving findings (max 5). Each MUST include `file`, `line_start`, `line_end`. These become the body of HEGELIAN-REVIEW.md.
+- `concessions[]`: per finding from the other side that was either incorporated or dropped.
+- `open_disagreements[]`: where thesis and antithesis genuinely disagree on whether a finding is real.
+- `next_steps[]`: optional follow-up items for the PR author beyond the surviving findings (e.g., "consider adding property test for X in a follow-up").
+- `verdict`:
+  - `converged` if no critical/high findings survive AND no open_disagreements remain → APPROVED or APPROVED_WITH_NITS
+  - `needs_revision` if any critical/high findings survive OR open_disagreements remain → CHANGES_REQUESTED or BLOCKED
+</output_structure>
+
+<calibration_rules>
+A synthesis with empty `issues[]` and verdict=needs_revision is incoherent.
+A synthesis with verdict=converged but non-empty critical/high issues is incoherent.
+Cap issues at 5.
+This is the synthesized review — it should be more decisive than either input, not less.
+</calibration_rules>
+
+<grounding_rules>
+Every `issues[]` entry MUST include `file`, `line_start`, `line_end` from the diff.
+Don't carry forward findings that the other side convincingly refuted.
+Don't invent findings; only synthesize from thesis + antithesis.
+</grounding_rules>
+
+<structured_output_contract>
+Return ONLY valid JSON conforming to converge/schemas/critique.schema.json.
+No prose, no markdown fences, no leading/trailing text.
+Set `author`={{AUTHOR}}, `mode`="review", `round`={{ROUND}}.
+Issue ids C1.. for claude, K1.. for codex (carry forward from thesis/antithesis where possible).
+The schema has `additionalProperties: false`. Verdict signal is the prefix of `summary`.
+</structured_output_contract>
+
+<final_check>
+- `summary` opens with one of: APPROVED, APPROVED_WITH_NITS, CHANGES_REQUESTED, BLOCKED
+- `issues[]` are tied to file:line, surviving evidence
+- `concessions[]` honestly reflect what was incorporated or dropped
+- `verdict` matches the summary verdict signal
+- Output is a single JSON object validating against the schema
+</final_check>
+
+<base_branch>
+{{BASE_BRANCH}}
+</base_branch>
+
+<prior_log>
+{{PRIOR_LOG}}
+</prior_log>
+
+<thesis>
+{{THESIS}}
+</thesis>
+
+<antithesis>
+{{ANTITHESIS}}
+</antithesis>
+
+<diff>
+{{ARTIFACT}}
+</diff>

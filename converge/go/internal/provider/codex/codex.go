@@ -1,7 +1,7 @@
-// Package codex runs `codex exec` (optionally with `resume <thread>`),
-// streams JSONL events to stderr in human-readable form so the caller can
-// see codex is alive, captures the thread id from `thread.started`, and
-// emits the final assistant message on stdout.
+// Package codex implements the codex-CLI provider.
+// It runs `codex exec` (optionally `resume <thread>`), streams JSONL events
+// to stderr in human-readable form, captures the thread id from
+// `thread.started`, and writes the final assistant message to stdout.
 package codex
 
 import (
@@ -17,54 +17,29 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/michaellady/mike-skills/converge/internal/provider"
 )
 
-// Options configures a single codex critique call.
-type Options struct {
-	PromptFile  string
-	Effort      string        // default "xhigh"
-	ResumeID    string        // empty = fresh thread
-	Timeout     time.Duration // default 5 min, overridable via env
-	Quiet       bool          // suppress stderr heartbeat
-	HeartbeatS  int           // min seconds between idle heartbeats (default 5)
-	ThreadOut   string        // path to write captured thread id (round 1 only)
-	Stderr      io.Writer
-	Stdout      io.Writer
-}
+// Provider satisfies provider.Provider for the OpenAI Codex CLI.
+type Provider struct{}
 
-// Common exit codes returned by Run via *Error.
-const (
-	ExitBadArgs      = 2
-	ExitAuthError    = 3
-	ExitTimeout      = 4
-	ExitNoFinalMsg   = 5
-)
+// New returns a fresh codex provider.
+func New() *Provider { return &Provider{} }
 
-// Error carries an exit code so the CLI layer can map it through.
-type Error struct {
-	Code int
-	Err  error
-}
+// Name implements provider.Provider.
+func (*Provider) Name() string { return "codex" }
 
-func (e *Error) Error() string { return e.Err.Error() }
-func (e *Error) Unwrap() error { return e.Err }
-
-func newErr(code int, format string, args ...any) error {
-	return &Error{Code: code, Err: fmt.Errorf(format, args...)}
-}
-
-// Run executes the codex call described by opts. On success the final
-// assistant message is written to opts.Stdout. The thread id (when
-// captured) is written to opts.ThreadOut for resume in later rounds.
-func Run(ctx context.Context, opts Options) error {
+// Run implements provider.Provider.
+func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 	if opts.PromptFile == "" {
-		return newErr(ExitBadArgs, "prompt file is required")
+		return provider.NewError(provider.ExitBadArgs, "prompt file is required")
 	}
 	if _, err := os.Stat(opts.PromptFile); err != nil {
-		return newErr(ExitBadArgs, "prompt file not found: %s", opts.PromptFile)
+		return provider.NewError(provider.ExitBadArgs, "prompt file not found: %s", opts.PromptFile)
 	}
 	if _, err := exec.LookPath("codex"); err != nil {
-		return newErr(ExitBadArgs, "codex CLI not on PATH (npm install -g @openai/codex)")
+		return provider.NewError(provider.ExitBadArgs, "codex CLI not on PATH (npm install -g @openai/codex)")
 	}
 	if opts.Effort == "" {
 		opts.Effort = "xhigh"
@@ -100,7 +75,7 @@ func Run(ctx context.Context, opts Options) error {
 
 	prompt, err := os.ReadFile(opts.PromptFile)
 	if err != nil {
-		return newErr(ExitBadArgs, "cannot read prompt: %w", err)
+		return provider.NewError(provider.ExitBadArgs, "cannot read prompt: %v", err)
 	}
 
 	args := []string{"exec"}
@@ -111,9 +86,8 @@ func Run(ctx context.Context, opts Options) error {
 		"--skip-git-repo-check",
 		string(prompt),
 	)
-	// `-s/--sandbox` is exec-fresh-only; `codex exec resume` inherits
-	// sandbox from the original session and rejects -s with
-	// "unexpected argument '-s' found".
+	// `-s/--sandbox` is exec-fresh-only; `codex exec resume` inherits sandbox
+	// from the original session and rejects -s with "unexpected argument '-s'".
 	if opts.ResumeID == "" {
 		args = append(args, "-s", "read-only")
 	}
@@ -131,13 +105,13 @@ func Run(ctx context.Context, opts Options) error {
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return newErr(ExitBadArgs, "stdout pipe: %w", err)
+		return provider.NewError(provider.ExitBadArgs, "stdout pipe: %v", err)
 	}
 	var errBuf strings.Builder
 	cmd.Stderr = &errBuf
 
 	if err := cmd.Start(); err != nil {
-		return newErr(ExitBadArgs, "start codex: %w", err)
+		return provider.NewError(provider.ExitBadArgs, "start codex: %v", err)
 	}
 
 	final, threadID := streamFilter(stdout, opts)
@@ -145,10 +119,10 @@ func Run(ctx context.Context, opts Options) error {
 	waitErr := cmd.Wait()
 
 	if errors.Is(cctx.Err(), context.DeadlineExceeded) {
-		return newErr(ExitTimeout, "codex timed out after %s", opts.Timeout)
+		return provider.NewError(provider.ExitTimeout, "codex timed out after %s", opts.Timeout)
 	}
 	if isAuthError(errBuf.String()) {
-		return newErr(ExitAuthError, "codex auth error — run `codex login`")
+		return provider.NewError(provider.ExitAuthError, "codex auth error — run `codex login`")
 	}
 	if final == "" {
 		msg := "no final assistant message in JSONL stream"
@@ -159,11 +133,9 @@ func Run(ctx context.Context, opts Options) error {
 			}
 			msg += " (stderr: " + tail + ")"
 		}
-		return newErr(ExitNoFinalMsg, "%s", msg)
+		return provider.NewError(provider.ExitNoFinalMsg, "%s", msg)
 	}
 	if waitErr != nil {
-		// codex exited non-zero but we still got a final message — surface
-		// stderr to the caller's stderr but keep the exit successful.
 		fmt.Fprintln(opts.Stderr, "[codex] note: exited non-zero:", waitErr)
 	}
 
@@ -176,11 +148,11 @@ func Run(ctx context.Context, opts Options) error {
 	return nil
 }
 
-func streamFilter(r io.Reader, opts Options) (final, threadID string) {
+func streamFilter(r io.Reader, opts provider.Options) (final, threadID string) {
 	start := time.Now()
 	lastLog := start
 	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024) // up to 4MB lines
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 
 	logf := func(format string, args ...any) {
 		if opts.Quiet {
