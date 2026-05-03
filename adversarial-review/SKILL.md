@@ -18,8 +18,9 @@ The skill is implemented as a Go binary (`adversarial-review`) that wraps the sh
 - `claude` — Claude Code CLI (`claude -p <prompt> --output-format stream-json`).
 - `codex` — OpenAI Codex CLI (`codex exec`).
 
-**Opt-in reviewer (`--reviewers claude,codex,agent`):**
-- `agent` — Cursor `agent` CLI (`agent --print --output-format text <prompt>`). Registered alongside claude+codex but excluded from the default selection. Pass `--reviewers claude,codex,agent` to enable; tighter quotas per the Cursor plan, hence opt-in.
+**Opt-in reviewers** (registered alongside claude+codex but excluded from the default selection — pass via `--reviewers claude,codex,agent,gemini` to enable):
+- `agent` — Cursor `agent` CLI (`agent --print --output-format text <prompt>`). Tighter quotas per the Cursor plan, hence opt-in.
+- `gemini` — Google `gemini` CLI (`gemini --prompt <text> --output-format text --skip-trust`). Adds a third model family for high-stakes drafts.
 
 **Build (one-time):**
 
@@ -138,7 +139,7 @@ The binary handles, transparently:
 - Emission of the canonical merged JSON on stdout
 
 Flags:
-- `--reviewers <csv>` — which reviewers to dispatch (default `claude,codex`; opt-in `agent`)
+- `--reviewers <csv>` — which reviewers to dispatch (default `claude,codex`; opt-in `agent`, `gemini`)
 - `--prompt-file <path>` — read prompt from file instead of stdin
 - `--timeout <seconds>` — per-reviewer timeout (default 300)
 - `--quiet` — suppress provider heartbeat lines on stderr
