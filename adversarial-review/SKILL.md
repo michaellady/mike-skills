@@ -12,11 +12,27 @@ This is the standalone, cross-project home for the **Adversarial Review pattern*
 
 ## Requirements
 
-This skill requires:
-- The **Task / Agent tool** (with `subagent_type: "general-purpose"`) to spawn the Claude reviewer.
-- The **`codex` CLI** on PATH (`codex exec`) to spawn the Codex reviewer in parallel.
+The skill is implemented as a Go binary (`adversarial-review`) that wraps the shared `mike-skills/llm-provider/` module. The binary fans out the SAME prompt to both reviewers in parallel and emits a merged JSON verdict.
 
-If `codex` is unavailable on the system (`command -v codex` returns nothing) the skill degrades gracefully to a Claude-only review and notes `codex_skipped: true` in the response. If the Agent tool itself isn't available, the caller should fall back to inline composition per PATTERNS.md "Option B".
+**On PATH:**
+- `claude` — Claude Code CLI (drives Reviewer A via `claude -p <prompt> --output-format stream-json`).
+- `codex` — OpenAI Codex CLI (drives Reviewer B via `codex exec`).
+
+**Build (one-time):**
+
+In mike-skills directly:
+```bash
+cd ~/dev/mike-skills/adversarial-review
+go build -o adversarial-review .
+```
+
+In a downstream repo (e.g. `claude-social-media-skills`) where this skill is vendored under `_shared/adversarial-review/`:
+```bash
+cd <repo>/_shared/adversarial-review
+go build -o adversarial-review .
+```
+
+If either CLI is missing on the system (`command -v <name>` returns nothing) the binary degrades gracefully to a single-reviewer audit and sets `claude_skipped: true` / `codex_skipped: true` in the response.
 
 **Why dual-reviewer:** different model families catch different failure modes. Claude tends to flag tone/voice drift, CTA violations, and brand-voice mismatch; Codex tends to flag logical inconsistency, unsupported quantitative claims, and structural rule violations. Two independent passes ≈ catches the union of failure modes a single reviewer would miss.
 
@@ -97,33 +113,37 @@ Return ONLY this JSON object, no surrounding prose:
 
 Do NOT include any compose-phase context (intent, history, prior drafts, why-the-composer-chose-this). Fresh eyes are the point.
 
-### Phase 3 — Spawn the reviewers (parallel: Claude + Codex)
+### Phase 3 — Run the dual-reviewer binary
 
-Run both reviewers in parallel. Both see the SAME assembled prompt from Phase 2.
-
-**Reviewer A — Claude subagent.** Use the `Agent` tool with `subagent_type: "general-purpose"`. Pass the assembled prompt as the agent's task input. The subagent runs with no inherited conversation context.
-
-**Reviewer B — Codex `exec`.** Spawn `codex exec` in the same conversation turn (parallel to the Agent call). Pipe the assembled prompt via stdin so the prompt body is preserved exactly:
+Pipe the assembled prompt into the `adversarial-review` binary. The binary spawns both `claude` and `codex` CLIs in parallel via the shared `mike-skills/llm-provider/` transport, captures each reviewer's JSON, and merges them.
 
 ```bash
-cat <<'PROMPT' | codex exec --skip-git-repo-check -
-<assembled prompt from Phase 2>
-PROMPT
+printf '%s' "$ASSEMBLED_PROMPT" | <repo>/_shared/adversarial-review/adversarial-review
 ```
 
-(Use a unique HEREDOC sentinel if the prompt body contains the literal `PROMPT`.) Codex returns plain text on stdout; expect the same JSON shape the prompt requests. If the user has a preferred Codex model configured in `~/.codex/config.toml`, that wins; otherwise default model.
+Or with an on-disk prompt file:
 
-**If `codex` is missing on the host** (`command -v codex` returns empty), skip Reviewer B, run only Reviewer A, and set `codex_skipped: true` in the response.
+```bash
+adversarial-review --prompt-file /tmp/review-prompt.txt --timeout 300
+```
 
-Important: don't pass the source via tool calls / file reads from either reviewer's perspective. The source MUST be inline in the prompt body so each reviewer reads it as part of the audit, not separately. For very large source content (>100KB), warn the caller — the prompts will be expensive but should still work.
+The binary handles, transparently:
+- Parallel dispatch of both reviewers (process management, timeouts, heartbeat suppression)
+- JSON parsing with markdown-fence + surrounding-prose tolerance
+- Detection of either CLI missing on PATH → `claude_skipped: true` / `codex_skipped: true`
+- Merge rule (FAIL-OR + issue dedup + `[claude]/[codex]/[both]` attribution)
+- Emission of the canonical merged JSON on stdout
 
-### Phase 4 — Parse and merge the verdicts
+**Caller responsibility:** assemble the prompt body using the Phase 2 scaffold. The binary only owns transport + merge — composing the prompt (which source, which rules, which drafts) stays in the calling skill's prompt because that's the cognition.
 
-Each reviewer returns the JSON shape from the Phase 2 scaffold. Two failure modes per reviewer:
-- **Malformed JSON:** retry once with the explicit reminder appended ("return ONLY the JSON object, no surrounding prose, no markdown code fences"). If still malformed, treat that reviewer as `parse_error` and continue with the other.
-- **Missing required fields** (no `summary`, no `verdicts`, verdicts missing `draft_id`/`verdict`/`issues`): same retry-once policy.
+Important: the source MUST be inline in the assembled prompt body so each reviewer reads it as part of the audit, not separately via tool calls. For very large source content (>100KB), warn the caller — the prompts will be expensive but should still work.
 
-If BOTH reviewers `parse_error`, return the `parse_error` shape (Phase 5). If only ONE parses, proceed with that reviewer's verdicts and set `codex_parse_error: true` (or `claude_parse_error: true`) in the response.
+### Phase 4 — Read the merged verdict
+
+The binary emits exactly the canonical shape on stdout. Two reviewer-level failure modes are handled internally and surfaced via flags rather than escalated:
+
+- **Malformed JSON from a reviewer:** that reviewer's output is captured into `raw_response` and the corresponding `*_parse_error: true` flag is set. The binary still emits a merged verdict using whatever reviewers DID parse cleanly.
+- **Both reviewers parse_error or skipped:** binary emits `summary: "parse_error"` with empty verdicts, exits non-zero (2).
 
 **Merge rule (when both reviewers returned valid verdicts):**
 - For each `draft_id`, the merged verdict is FAIL if EITHER reviewer marked it FAIL; PASS only if BOTH marked it PASS.
