@@ -6,9 +6,9 @@ package dispatch
 import (
 	"fmt"
 
-	"github.com/michaellady/mike-skills/converge/internal/provider"
-	"github.com/michaellady/mike-skills/converge/internal/provider/claude"
-	"github.com/michaellady/mike-skills/converge/internal/provider/codex"
+	"github.com/michaellady/mike-skills/llm-provider/claude"
+	"github.com/michaellady/mike-skills/llm-provider/codex"
+	"github.com/michaellady/mike-skills/llm-provider/provider"
 )
 
 // Get returns the provider for the given name. An empty name resolves to

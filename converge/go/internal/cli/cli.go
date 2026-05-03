@@ -16,11 +16,11 @@ import (
 	"github.com/michaellady/mike-skills/converge/internal/logwriter"
 	"github.com/michaellady/mike-skills/converge/internal/plan"
 	"github.com/michaellady/mike-skills/converge/internal/preflight"
-	"github.com/michaellady/mike-skills/converge/internal/provider"
 	"github.com/michaellady/mike-skills/converge/internal/schema"
 	"github.com/michaellady/mike-skills/converge/internal/smoke"
 	"github.com/michaellady/mike-skills/converge/internal/status"
 	"github.com/michaellady/mike-skills/converge/internal/tmpl"
+	"github.com/michaellady/mike-skills/llm-provider/provider"
 )
 
 // Run dispatches one invocation. Returns the desired process exit code.

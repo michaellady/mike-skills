@@ -1,13 +1,15 @@
-// Package provider defines the LLM transport interface used by every
-// critique call in converge. Implementations live in subpackages (codex,
-// claude, ...) and are dispatched by internal/dispatch.
+// Package provider defines the LLM transport interface used by callers
+// that need to drive the Claude or Codex CLI from Go. Implementations
+// live in sibling subpackages (claude, codex, ...) of this module.
+//
+// Originally extracted from mike-skills/converge so that other skills
+// (adversarial-review, etc.) can share the same CLI dispatch transport
+// without depending on converge.
 //
 // Adding a new provider:
-//   1. Create internal/provider/<name>/<name>.go with `type Provider struct{}`
-//      satisfying the Provider interface (Name, Run).
-//   2. Register it in internal/dispatch/dispatch.go.
-//   3. Add a CLI subcommand alias in internal/cli/cli.go (optional —
-//      `llm-critique --provider <name>` already works through dispatch).
+//  1. Create <module>/<name>/<name>.go with `type Provider struct{}`
+//     satisfying the Provider interface (Name, Run).
+//  2. Have the caller register it in its own dispatch table.
 package provider
 
 import (

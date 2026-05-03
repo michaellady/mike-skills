@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/michaellady/mike-skills/converge/internal/provider"
+	"github.com/michaellady/mike-skills/llm-provider/provider"
 )
 
 // Provider satisfies provider.Provider for the OpenAI Codex CLI.
