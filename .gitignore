@@ -1,0 +1,9 @@
+# Claude Code per-machine settings + runtime locks (not shared)
+.claude/settings.local.json
+.claude/*.lock
+
+# uninstall-skill undo logs (local recovery artifacts)
+uninstall-logs/
+
+# macOS metadata
+.DS_Store
