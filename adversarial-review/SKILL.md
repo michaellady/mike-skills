@@ -14,31 +14,33 @@ This is the standalone, cross-project home for the **Adversarial Review pattern*
 
 The skill is implemented as a Go binary (`adversarial-review`) that wraps the shared `mike-skills/llm-provider/` module. The binary fans out the SAME prompt to every selected reviewer in parallel and emits a merged JSON verdict.
 
-**Default reviewers (`--reviewers claude,codex`):**
+**Default reviewers (`--reviewers claude,codex,agy`):**
 - `claude` — Claude Code CLI (`claude -p <prompt> --output-format stream-json`).
 - `codex` — OpenAI Codex CLI (`codex exec`).
+- `agy` — the `agy` agent CLI (`agy --print <prompt> --dangerously-skip-permissions`). A third independent family — in practice it catches stragglers the other two miss. (Replaced the deprecated `gemini` provider; `gemini` remains in `llm-provider` only for any external consumers — no in-repo skill wires it anymore.)
 
-**Opt-in reviewers** (registered alongside claude+codex but excluded from the default selection — pass via `--reviewers claude,codex,agent,gemini` to enable):
-- `agent` — Cursor `agent` CLI (`agent --print --output-format text <prompt>`). Tighter quotas per the Cursor plan, hence opt-in.
-- `gemini` — Google `gemini` CLI (`gemini --prompt <text> --output-format text --skip-trust`). Adds a third model family for high-stakes drafts.
+**Opt-in reviewer** (registered but excluded from the default selection — pass via `--reviewers claude,codex,agent,agy` to enable):
+- `agent` — Cursor `agent` CLI (`agent --print --output-format text <prompt>`). Excluded by default because free/low-tier Cursor plans quota-fail on nearly every run (which would just add a `skipped` entry each time); enable it explicitly for high-stakes drafts when you have Cursor quota.
 
 **Build (one-time):**
 
-In mike-skills directly:
+**Canonical home — `mike-skills/adversarial-review/`.** This is where `main.go`, `main_test.go`, `go.mod`, `smoke.sh`, and this SKILL.md are maintained. It is its own Go module that `replace`s the sibling `../llm-provider` module in the same repo, so it builds with no vendored snapshot:
 ```bash
 cd ~/dev/mike-skills/adversarial-review
 go build -o adversarial-review .
 ```
 
-In a downstream repo (e.g. `claude-social-media-skills`) where this skill is vendored under `_shared/adversarial-review/`:
+**Vendored copies** (e.g. `claude-social-media-skills/_shared/adversarial-review/`) are self-contained snapshots so downstream repos build without `mike-skills` present. A vendored copy carries the same `main.go`/tests/tooling plus an `internal/llm-provider/` snapshot, and its `go.mod` `replace`s `./internal/llm-provider`:
 ```bash
 cd <repo>/_shared/adversarial-review
 go build -o adversarial-review .
 ```
 
+> Keeping them in sync: run `<repo>/_shared/adversarial-review/sync.sh` (pulls SKILL.md, `main.go`, `main_test.go`, `smoke.sh`, `README.md`, and the `llm-provider/*` sources from `mike-skills` into the vendored copy). **`go.mod` is intentionally NOT synced** — the canonical copy replaces `../llm-provider`, the vendored copy replaces `./internal/llm-provider`. Everything else stays byte-identical.
+
 **Verifying it works (REQUIRED after every change to provider code or after upgrading a provider CLI):**
 
-Pure-logic Go tests cover parse + merge + dedup but DO NOT invoke the actual `claude.Run()` / `codex.Run()` / `agent.Run()` / `gemini.Run()` CLI dispatch. End-to-end smoke is mandatory before claiming a transport change works:
+Pure-logic Go tests cover parse + merge + dedup but DO NOT invoke the actual `claude.Run()` / `codex.Run()` / `agent.Run()` / `agy.Run()` CLI dispatch. End-to-end smoke is mandatory before claiming a transport change works:
 
 ```bash
 _shared/adversarial-review/smoke.sh                # individually + N-way default + N-way all
@@ -50,7 +52,7 @@ This caught the agent provider's `--model auto` requirement on free Cursor plans
 
 If a selected CLI is missing on the system (`command -v <name>` returns nothing) the binary degrades gracefully to a smaller reviewer set and lists the missing one(s) in `skipped: {<name>: "<reason>"}` in the response.
 
-**Why dual-reviewer (default):** different model families catch different failure modes. Claude tends to flag tone/voice drift, CTA violations, and brand-voice mismatch; Codex tends to flag logical inconsistency, unsupported quantitative claims, and structural rule violations. Two independent passes ≈ catches the union of failure modes a single reviewer would miss. Adding `agent` (Cursor) is a third independent perspective — useful for high-stakes drafts where the marginal cost of one more reviewer is acceptable.
+**Why three-reviewer (default):** different model families catch different failure modes. Claude tends to flag tone/voice drift, CTA violations, and brand-voice mismatch; Codex tends to flag logical inconsistency, unsupported quantitative claims, and structural rule violations; `agy` is a third independent family that, in practice, has caught issues the other two missed (e.g. a stale function signature, a mislabeled table row). Three independent passes ≈ the union of failure modes a single reviewer would miss. Adding `agent` (Cursor) is a fourth perspective for high-stakes drafts when you have the quota for it.
 
 ## When to Use
 
@@ -151,21 +153,30 @@ The binary handles, transparently:
 - Emission of the canonical merged JSON on stdout
 
 Flags:
-- `--reviewers <csv>` — which reviewers to dispatch (default `claude,codex`; opt-in `agent`, `gemini`)
+- `--reviewers <csv>` — which reviewers to dispatch (default `claude,codex,agy`; `agent` is opt-in)
 - `--prompt-file <path>` — read prompt from file instead of stdin
 - `--timeout <seconds>` — per-reviewer timeout (default 300)
 - `--quiet` — suppress provider heartbeat lines on stderr
 
 **Caller responsibility:** assemble the prompt body using the Phase 2 scaffold. The binary only owns transport + merge — composing the prompt (which source, which rules, which drafts) stays in the calling skill's prompt because that's the cognition.
 
-Important: the source MUST be inline in the assembled prompt body so each reviewer reads it as part of the audit, not separately via tool calls. For very large source content (>100KB), warn the caller — the prompts will be expensive but should still work.
+Important: the source MUST be inline in the assembled prompt body so each reviewer reads it as part of the audit, not separately via tool calls.
+
+**Large prompts → timeouts (learned the hard way).** Per-reviewer latency scales with prompt size, and `claude`/`codex` will hit the `--timeout` (default 300s) on very large prompts — a ~330KB prompt timed both out at 9 minutes. Mitigations, in order of preference:
+1. **Send lean source, not a raw dump.** Instead of inlining hundreds of KB of source verbatim, distill the *facts the rules actually check* (e.g. the canonical reason-code list, the specific quotes/numbers, the ICP figures) into a few KB. A lean prompt both finishes fast and produces sharper findings. This is usually the right fix.
+2. **Raise `--timeout`** (e.g. `--timeout 540`) when the full source genuinely must be inline.
+3. If a reviewer still times out, it is reported under `skipped: {<name>: "timed out"}` (not `parse_error`) and the others still produce a verdict — but you've lost that reviewer's coverage, so prefer (1).
+
+For source content >100KB, warn the caller and apply (1) where possible.
 
 ### Phase 4 — Read the merged verdict
 
-The binary emits exactly the canonical shape on stdout. Two reviewer-level failure modes are handled internally and surfaced via flags rather than escalated:
+The binary emits exactly the canonical shape on stdout. Reviewer-level failure modes are handled internally and surfaced via flags rather than escalated:
 
-- **Malformed JSON from a reviewer:** that reviewer's output is captured into `raw_response` and the reviewer's name is appended to `parse_error: ["<name>"]`. The binary still emits a merged verdict using whatever reviewers DID parse cleanly.
-- **All selected reviewers parse_error or skipped:** binary emits `summary: "parse_error"` with empty verdicts, exits non-zero (2).
+- **Reviewer unavailable (quota / auth / timeout):** a reviewer that was dispatched but couldn't return a verdict because it hit a usage/rate limit, an auth/login error, or the timeout is reported under `skipped: {<name>: "<reason>"}` — e.g. `{"agent": "usage/quota limit"}`, `{"claude": "timed out"}`. It is **not** a `parse_error` (the reviewer didn't return garbage; it returned nothing usable for a reason outside the audit). The full error text is still captured in `raw_response`. This is the common case for `agent` on a free Cursor plan.
+- **Malformed JSON from a reviewer:** the reviewer ran and replied, but the reply couldn't be parsed as the expected JSON. That reviewer's output is captured into `raw_response` and its name is appended to `parse_error: ["<name>"]`. The binary still emits a merged verdict using whatever reviewers DID parse cleanly.
+- **CLI not on PATH:** the reviewer was never dispatched; reported under `skipped: {<name>: "<cli> CLI not on PATH"}`.
+- **All selected reviewers skipped or parse_error:** binary emits `summary: "parse_error"` with empty verdicts, exits non-zero (2).
 
 **Merge rule (when at least one reviewer returned a valid verdict):**
 - For each `draft_id`, the merged verdict is FAIL if ANY reviewer marked it FAIL; PASS only if every contributing reviewer marked it PASS.

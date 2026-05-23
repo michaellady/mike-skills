@@ -7,9 +7,9 @@ import (
 	"fmt"
 
 	"github.com/michaellady/mike-skills/llm-provider/agent"
+	"github.com/michaellady/mike-skills/llm-provider/agy"
 	"github.com/michaellady/mike-skills/llm-provider/claude"
 	"github.com/michaellady/mike-skills/llm-provider/codex"
-	"github.com/michaellady/mike-skills/llm-provider/gemini"
 	"github.com/michaellady/mike-skills/llm-provider/provider"
 )
 
@@ -23,14 +23,14 @@ func Get(name string) (provider.Provider, error) {
 		return claude.New(), nil
 	case "agent":
 		return agent.New(), nil
-	case "gemini":
-		return gemini.New(), nil
+	case "agy":
+		return agy.New(), nil
 	default:
-		return nil, fmt.Errorf("unknown provider %q (supported: codex, claude, agent, gemini)", name)
+		return nil, fmt.Errorf("unknown provider %q (supported: codex, claude, agent, agy)", name)
 	}
 }
 
 // Names lists the registered provider names.
 func Names() []string {
-	return []string{"codex", "claude", "agent", "gemini"}
+	return []string{"codex", "claude", "agent", "agy"}
 }
