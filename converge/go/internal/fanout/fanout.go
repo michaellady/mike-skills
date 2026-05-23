@@ -1,30 +1,31 @@
-// Command adversarial-review dispatches the SAME prompt to every selected
-// reviewer CLI in parallel (claude, codex, agy by default; agent opt-in),
-// parses each reviewer's JSON verdict, and emits a merged canonical response.
+// Package fanout dispatches the SAME prompt to every selected reviewer CLI in
+// parallel (claude, codex, agy by default; agent opt-in), parses each
+// reviewer's JSON verdict, and emits a merged canonical response. This is the
+// "adversarial review" audit capability — fresh-eyes, single-shot, FAIL-OR —
+// folded into converge from the former standalone adversarial-review skill.
 //
-// Usage:
+// Driven by the `converge audit` subcommand:
 //
-//	cat prompt.txt | adversarial-review
-//	adversarial-review --prompt-file prompt.txt
+//	cat prompt.txt | converge audit
+//	converge audit --prompt-file prompt.txt --reviewers claude,codex,agy
 //
-// The merged response shape (see SKILL.md for the contract):
+// The merged response shape (see SKILL.md `audit` mode for the contract):
 //
 //	{
 //	  "summary": "all_pass" | "some_fail" | "parse_error",
 //	  "verdicts": [
 //	    {"draft_id": "<id>", "verdict": "PASS"|"FAIL",
-//	     "issues": ["[claude] ...", "[codex] ...", "[claude+agent] ...", "[claude+codex+agent] ..."]}
+//	     "issues": ["[claude] ...", "[claude+codex] ...", "[claude+codex+agy] ..."]}
 //	  ],
-//	  "reviewers": ["claude", "codex", "agent"],
+//	  "reviewers": ["claude", "codex", "agy"],
 //	  "skipped": {"<reviewer>": "<reason>"},
 //	  "parse_error": ["<reviewer>", ...],
 //	  "error": string, "raw_response": string
 //	}
 //
-// Merge rule: a draft is FAIL if ANY reviewer flagged it FAIL.
-// Issues are clustered by overlap and prefixed with the reviewers that raised
-// them, e.g. "[claude+codex] ..." when both flag the same problem.
-package main
+// Merge rule: a draft is FAIL if ANY reviewer flagged it FAIL. Issues are
+// clustered by overlap and prefixed with the reviewers that raised them.
+package fanout
 
 import (
 	"context"
@@ -67,17 +68,18 @@ type mergedResp struct {
 	RawResponse string            `json:"raw_response,omitempty"`
 }
 
-// reviewerSpec describes one reviewer the binary knows how to dispatch.
+// reviewerSpec describes one reviewer the audit knows how to dispatch.
 // Order in `registeredReviewers` is the canonical reviewer order — also the
-// order that issue attribution is rendered in (e.g. "[claude+codex+agent]").
+// order issue attribution is rendered in (e.g. "[claude+codex+agy]").
 type reviewerSpec struct {
 	name string
 	cli  string // CLI name on PATH
 	make func() provider.Provider
 }
 
-// registeredReviewers is every provider the binary knows how to dispatch.
-// Order here is the canonical reviewer order used for issue attribution.
+// registeredReviewers is every provider the audit knows how to dispatch.
+// Same provider constructors converge's internal/dispatch wires; kept here as
+// a list so attribution order and PATH (cli) names stay explicit.
 var registeredReviewers = []reviewerSpec{
 	{name: "claude", cli: "claude", make: func() provider.Provider { return claude.New() }},
 	{name: "codex", cli: "codex", make: func() provider.Provider { return codex.New() }},
@@ -85,43 +87,45 @@ var registeredReviewers = []reviewerSpec{
 	{name: "agy", cli: "agy", make: func() provider.Provider { return agy.New() }},
 }
 
-// defaultReviewers is the comma-separated default for the --reviewers flag.
+// defaultReviewers is the comma-separated default for --reviewers.
 //
 // Default = claude + codex + agy: three independent agent families catch
-// different failure modes (Claude: tone/voice/CTA; Codex: logical & structural
-// inconsistency; agy: a third perspective that has, in practice, caught
-// stragglers the other two missed), and all three are reliable enough to run
-// every time. (`agy` replaced the deprecated `gemini` provider.)
-//
-// `agent` (Cursor) is registered but OPT-IN: free/low-tier Cursor plans
-// quota-fail on nearly every run, so including it by default just adds noise.
-// Pass --reviewers claude,codex,agent,agy to add it for high-stakes drafts.
+// different failure modes, and all three are reliable enough to run every time.
+// (`agy` replaced the deprecated `gemini` provider.) `agent` (Cursor) is
+// registered but OPT-IN — free/low-tier plans quota-fail on nearly every run.
 //
 // Per-reviewer failures degrade gracefully: a reviewer that quota-fails,
 // auth-fails, or times out is reported under `skipped` (see unavailableReason),
 // NOT `parse_error` — so the remaining reviewers still produce a merged verdict.
 const defaultReviewers = "claude,codex,agy"
 
-func main() {
+// Run executes one audit fan-out. args are the `converge audit` subcommand
+// args (flags only). Returns the desired process exit code.
+func Run(args []string) int {
+	fs := flag.NewFlagSet("audit", flag.ContinueOnError)
 	var promptFile string
 	var timeoutSec int
 	var quiet bool
 	var reviewersCSV string
-	flag.StringVar(&promptFile, "prompt-file", "", "path to prompt file; if empty, read from stdin")
-	flag.IntVar(&timeoutSec, "timeout", 300, "per-reviewer timeout (seconds)")
-	flag.BoolVar(&quiet, "quiet", false, "suppress provider heartbeat lines on stderr")
-	flag.StringVar(&reviewersCSV, "reviewers", defaultReviewers,
+	fs.StringVar(&promptFile, "prompt-file", "", "path to prompt file; if empty, read from stdin")
+	fs.IntVar(&timeoutSec, "timeout", 300, "per-reviewer timeout (seconds)")
+	fs.BoolVar(&quiet, "quiet", false, "suppress provider heartbeat lines on stderr")
+	fs.StringVar(&reviewersCSV, "reviewers", defaultReviewers,
 		"comma-separated reviewers to dispatch (registered: claude,codex,agent,agy)")
-	flag.Parse()
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
 
 	selected, err := selectReviewers(reviewersCSV)
 	if err != nil {
-		die("%v", err)
+		fmt.Fprintf(os.Stderr, "audit: %v\n", err)
+		return 2
 	}
 
 	promptPath, cleanup, err := resolvePromptPath(promptFile)
 	if err != nil {
-		die("prompt input: %v", err)
+		fmt.Fprintf(os.Stderr, "audit: prompt input: %v\n", err)
+		return 2
 	}
 	defer cleanup()
 
@@ -158,8 +162,8 @@ func main() {
 	parsed := map[string]*reviewerResp{}
 	for res := range resultsCh {
 		if res.err != nil {
-			// A reviewer that was dispatched but couldn't produce a verdict for
-			// reasons outside the audit (quota, auth, timeout) is "skipped", not a
+			// A reviewer dispatched but unable to produce a verdict for reasons
+			// outside the audit (quota, auth, timeout) is "skipped", not a
 			// malformed-output parse_error. Keeps the merged result honest.
 			if reason, ok := unavailableReason(res.err); ok {
 				out.Skipped[res.name] = reason
@@ -182,7 +186,7 @@ func main() {
 		out.Summary = "parse_error"
 		out.Error = "no reviewers returned a usable verdict (all skipped, errored, or malformed JSON)"
 		emit(out)
-		os.Exit(2)
+		return 2
 	}
 
 	merged := merge(parsed, selected)
@@ -198,6 +202,7 @@ func main() {
 		out.Skipped = nil
 	}
 	emit(out)
+	return 0
 }
 
 // selectReviewers parses the comma-separated --reviewers flag against the
@@ -243,7 +248,7 @@ func resolvePromptPath(p string) (string, func(), error) {
 		}
 		return p, func() {}, nil
 	}
-	tmp, err := os.CreateTemp("", "adversarial-review-prompt-*.txt")
+	tmp, err := os.CreateTemp("", "converge-audit-prompt-*.txt")
 	if err != nil {
 		return "", nil, err
 	}
@@ -275,7 +280,7 @@ func runProvider(p provider.Provider, promptPath string, timeoutSec int, quiet b
 		Quiet:      quiet,
 		Stdout:     &buf,
 		Stderr:     os.Stderr,
-		ThreadOut:  filepath.Join(os.TempDir(), fmt.Sprintf("ar-%s-%d.thread", p.Name(), os.Getpid())),
+		ThreadOut:  filepath.Join(os.TempDir(), fmt.Sprintf("converge-audit-%s-%d.thread", p.Name(), os.Getpid())),
 	}
 	err := p.Run(context.Background(), opts)
 	return buf.String(), err
@@ -284,11 +289,7 @@ func runProvider(p provider.Provider, promptPath string, timeoutSec int, quiet b
 // unavailableReason classifies a provider error as a graceful "skipped" — the
 // reviewer was dispatched but couldn't produce a verdict for reasons outside
 // the audit itself (quota/rate limit, auth, or timeout) — versus a genuine
-// failure that belongs in parse_error. Returns (reason, true) when the error
-// indicates unavailability. This keeps the merged output honest: a Cursor agent
-// that hit its usage cap is reported as skipped, not as a malformed-JSON
-// parse_error, and a reviewer that ran out of time on a huge prompt is "timed
-// out" rather than looking like it returned garbage.
+// failure that belongs in parse_error.
 func unavailableReason(err error) (string, bool) {
 	if err == nil {
 		return "", false
@@ -313,10 +314,8 @@ func unavailableReason(err error) (string, bool) {
 	return "", false
 }
 
-// parseResponse extracts the JSON verdict object from a reviewer's reply.
-// Reviewers sometimes wrap JSON in markdown fences or surrounding prose;
-// tolerate that by trimming fences and slicing between the first '{' and
-// last '}'.
+// parseResponse extracts the JSON verdict object from a reviewer's reply,
+// tolerating markdown fences and surrounding prose.
 func parseResponse(s string) (*reviewerResp, error) {
 	s = strings.TrimSpace(s)
 	if strings.HasPrefix(s, "```") {
@@ -343,10 +342,8 @@ func parseResponse(s string) (*reviewerResp, error) {
 
 // merge consolidates verdicts across N reviewers using the FAIL-OR rule:
 // a draft is FAIL if ANY reviewer flagged it FAIL. Issues are clustered by
-// overlap and attributed to every reviewer that raised them.
-//
-// `selected` is the canonical reviewer order for this invocation — defines
-// the prefix order on rendered issues (e.g. "[claude+codex]" vs "[codex+claude]").
+// overlap and attributed to every reviewer that raised them. `selected` is the
+// canonical reviewer order — defines the prefix order on rendered issues.
 func merge(parsed map[string]*reviewerResp, selected []reviewerSpec) mergedResp {
 	reviewerOrder := []string{}
 	for _, r := range selected {
@@ -398,9 +395,8 @@ func merge(parsed map[string]*reviewerResp, selected []reviewerSpec) mergedResp 
 	return out
 }
 
-// clusterIssues collects every (reviewer, issue) pair, clusters issues that
-// overlap (same underlying problem flagged by multiple reviewers), and
-// renders each cluster as "[r1+r2+...] <issue text>" using the canonical
+// clusterIssues collects every (reviewer, issue) pair, clusters overlapping
+// issues, and renders each cluster as "[r1+r2+...] <issue text>" in canonical
 // reviewer order.
 func clusterIssues(perReviewer map[string]*verdict, reviewerOrder []string) []string {
 	type cluster struct {
@@ -446,9 +442,8 @@ func clusterIssues(perReviewer map[string]*verdict, reviewerOrder []string) []st
 }
 
 // issueOverlaps returns true when two issue strings appear to flag the same
-// underlying problem. Heuristic: identical (case-insensitive) OR a 12-char
-// substring of one appears verbatim in the other. Tuned to favor PASS-only
-// dedup over false collapses (when in doubt, keep them separate).
+// underlying problem: identical (case-insensitive) OR a 12-char substring of
+// one appears verbatim in the other.
 func issueOverlaps(a, b string) bool {
 	la := strings.ToLower(a)
 	lb := strings.ToLower(b)
@@ -471,11 +466,6 @@ func emit(out mergedResp) {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(out); err != nil {
-		die("emit json: %v", err)
+		fmt.Fprintf(os.Stderr, "audit: emit json: %v\n", err)
 	}
-}
-
-func die(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "adversarial-review: "+format+"\n", args...)
-	os.Exit(2)
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/michaellady/mike-skills/converge/internal/cleanup"
 	"github.com/michaellady/mike-skills/converge/internal/dispatch"
 	"github.com/michaellady/mike-skills/converge/internal/embedded"
+	"github.com/michaellady/mike-skills/converge/internal/fanout"
 	"github.com/michaellady/mike-skills/converge/internal/gitops"
 	"github.com/michaellady/mike-skills/converge/internal/logwriter"
 	"github.com/michaellady/mike-skills/converge/internal/plan"
@@ -57,6 +58,8 @@ func Run(args []string) int {
 		return runLLM(rest, "claude")
 	case "llm-critique":
 		return runLLM(rest, "")
+	case "audit":
+		return fanout.Run(rest)
 	case "list-providers":
 		for _, n := range dispatch.Names() {
 			fmt.Println(n)
@@ -117,6 +120,13 @@ LLM transport (codex, claude, agent, or agy)
                                          callers.
   claude-critique [--resume <session-id>] [--model <m>] <prompt-file> [effort]
                                          Alias for llm-critique --provider claude.
+
+Adversarial audit (fresh-eyes fan-out — the folded adversarial-review)
+  audit [--reviewers claude,codex,agy] [--prompt-file <p>] [--timeout <s>]
+        [--quiet]                        Fan the SAME composed prompt out to all
+                                         reviewers in parallel, FAIL-OR merge,
+                                         emit canonical {summary,verdicts,...}
+                                         JSON. Prompt from --prompt-file or stdin.
 
 Inspection
   list-modes                             List embedded prompt template modes

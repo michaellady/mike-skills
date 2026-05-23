@@ -12,7 +12,7 @@ The single highest-leverage move is to anchor the stack on **an oracle the agent
 
 So the procedure is always: **establish the strongest oracle available (Step 1), then layer every other independent check the code admits, ordered by leverage (Step 2+).** Maximal means maximal *independent signal* — not running every tool blindly, and never chasing line coverage (the classic trap; see Step 5).
 
-This skill *builds the verification stack*. It does not run the loop ([converge](/Users/mikelady/dev/mike-skills/converge/SKILL.md) does) and it does not execute the cross-model audit itself ([adversarial-review](/Users/mikelady/dev/mike-skills/adversarial-review/SKILL.md) is the primitive it delegates to). Full taxonomy and tool tables live in [REFERENCE.md](./REFERENCE.md) — read it when you need the strategy/tool catalog; this file is the operational procedure.
+This skill *builds the verification stack*. It does not run the loop ([converge](/Users/mikelady/dev/mike-skills/converge/SKILL.md) does) and it does not execute the cross-model audit itself ([`converge audit`](/Users/mikelady/dev/mike-skills/converge/SKILL.md) is the primitive it delegates to). Full taxonomy and tool tables live in [REFERENCE.md](./REFERENCE.md) — read it when you need the strategy/tool catalog; this file is the operational procedure.
 
 ## When to Use
 
@@ -98,11 +98,11 @@ Apply these **whenever one agent writes both code and tests** (Step 0.3 flag). L
 
 ## Step 4 — Wire in cross-model review
 
-When an agent wrote both code and tests (and the stakes justify it), have a **different model family** audit the artifacts. Don't rebuild this — delegate to the existing `adversarial-review` binary (it fans the same prompt out to claude + codex + agy in parallel and merges with FAIL-OR). See [adversarial-review/SKILL.md](/Users/mikelady/dev/mike-skills/adversarial-review/SKILL.md) for the full contract.
+When an agent wrote both code and tests (and the stakes justify it), have a **different model family** audit the artifacts. Don't rebuild this — delegate to `/converge audit` (it fans the same prompt out to claude + codex + agy in parallel and merges with FAIL-OR). See the `audit` mode in [converge/SKILL.md](/Users/mikelady/dev/mike-skills/converge/SKILL.md) for the full contract.
 
 Map the verification artifacts onto its required inputs:
 
-| adversarial-review input | Value for verification review |
+| converge audit input | Value for verification review |
 |---|---|
 | `source_label` | `"TRUSTED REFERENCE"` / `"ORIGINAL IMPLEMENTATION"` / `"SPEC"` |
 | `source_content` | The oracle: the old impl, the spec, or the requirements |
@@ -118,11 +118,11 @@ Suggested `rules_list` for auditing an agent's test suite (this is where reward-
 - "No hardcoded expected values that special-case a specific input to force a pass."
 - "Any property/invariant the suite claims to test actually holds for generated inputs."
 
-The binary takes **one composed text prompt on stdin** — not JSON and not flags. So the fields above are *sections you write into that single prompt*, not separate arguments: assemble `$ASSEMBLED_PROMPT` using adversarial-review's Phase 2 scaffold — open with the `source_label` + `source_content`, name the `skill_name` and `artifact_name`, list the `rules_list`, then the `drafts` as a numbered list (the binary owns transport + merge only; composing the prompt is the caller's job). Then invoke (build once if the binary is missing):
+`converge audit` takes **one composed text prompt on stdin** — not JSON and not flags. So the fields above are *sections you write into that single prompt*, not separate arguments: assemble `$ASSEMBLED_PROMPT` using converge audit's Phase 2 scaffold — open with the `source_label` + `source_content`, name the `skill_name` and `artifact_name`, list the `rules_list`, then the `drafts` as a numbered list (the binary owns transport + merge only; composing the prompt is the caller's job). Then invoke (build converge once if needed):
 
 ```bash
-cd ~/dev/mike-skills/adversarial-review && go build -o adversarial-review .
-printf '%s' "$ASSEMBLED_PROMPT" | ~/dev/mike-skills/adversarial-review/adversarial-review
+# bash ~/dev/mike-skills/converge/build.sh   # one-time, if bin/converge is missing
+printf '%s' "$ASSEMBLED_PROMPT" | ~/dev/mike-skills/converge/bin/converge audit
 ```
 
 Honor its contract: FAIL-OR (any reviewer's FAIL → FAIL), and **caller-side loop protection** — if the same FAIL signature recurs 3× across revise/re-audit cycles, stop and escalate to the human. A persistently-failing assertion often means the agent believes the rule is wrong (a judgment call), not a fixable bug.
@@ -166,7 +166,7 @@ Keep it scannable — a real stack fits on one screen. Call out explicitly which
 
 ## Relationship to neighbors / What this is NOT
 
-- `maximize-verification` **builds the maximal verification stack**; `/converge verify` **runs the loop**; `adversarial-review` **is the cross-model audit primitive** it delegates to; `primitive-test` is the analogous code-vs-prompt advisor.
+- `maximize-verification` **builds the maximal verification stack**; `/converge verify` **runs the loop**; `/converge audit` **is the cross-model audit primitive** it delegates to; `primitive-test` is the analogous code-vs-prompt advisor.
 - NOT a test runner, NOT a coverage tool, NOT a mutation-testing engine — it recommends those, it doesn't reimplement them.
 - NOT a substitute for human spec review on greenfield code. When there's no oracle, it says so; it does not pretend a green suite means correct.
 - NOT a way to launder a bad rewrite into a "verified" one. Equivalence to a trusted reference is strong; two agents agreeing is not.
@@ -176,5 +176,5 @@ Keep it scannable — a real stack fits on one screen. Call out explicitly which
 - **Treating line coverage as the reliability number.** It measures execution, not verification. Use mutation score.
 - **Letting the implementing agent edit the tests or golden files.** That's how the harness gets gamed. Protect them.
 - **Recommending a spine with no oracle and calling it safe.** Greenfield has an unsolved oracle problem — name the human-review requirement.
-- **Passing compose-phase context to the cross-model reviewer.** Fresh eyes are the point; see adversarial-review's rules.
+- **Passing compose-phase context to the cross-model reviewer.** Fresh eyes are the point; see converge `audit` mode's rules.
 - **Running a loop with no tap condition or deadlock detector.** It either thrashes or cheats.

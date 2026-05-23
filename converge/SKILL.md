@@ -1,17 +1,17 @@
 ---
 name: converge
-description: Use when the user wants Claude and Codex to iterate together until they converge on a mutually-agreed result — or hit a deadlock the user must arbitrate. Works in four modes — plan, implement, verify, review — covering planning, implementation, verification, and code review. Triggers — "converge", "have claude and codex work it out", "iterate with codex until you agree", "claude vs codex on this <plan|code|tests|PR>", "two-AI consensus", "deadlock me a decision".
+description: Use when the user wants Claude, Codex, and agy to iterate together until they converge on a mutually-agreed result — or hit a deadlock the user must arbitrate — and for fresh-eyes adversarial review of drafted artifacts. Five modes — plan, implement, verify, review, and audit (the folded-in adversarial review). Triggers — "converge", "have claude and codex work it out", "iterate until you agree", "three-AI consensus", "deadlock me a decision", "adversarial review this", "audit my drafts", "fresh eyes on this", "review for fabrications".
 user_invocable: true
 ---
 
 # converge
 
-Two-AI iterative refinement across the full development lifecycle. Claude (this agent) and Codex (via the `codex` CLI) take turns critiquing and revising an artifact until either:
+Multi-AI iterative refinement across the full development lifecycle. Claude (this agent), Codex (via the `codex` CLI), and agy (via the `agy` CLI) take turns critiquing and revising an artifact until either:
 
-1. **Convergence** — both agree the artifact is sound (within a bounded change-rate threshold), OR
-2. **Deadlock** — they disagree on a decision neither can resolve from first principles, at which point the user is presented with each side's *best argument* and makes the call.
+1. **Convergence** — all reviewers agree the artifact is sound (within a bounded change-rate threshold), OR
+2. **Deadlock** — they disagree on a decision none can resolve from first principles, at which point the user is presented with each side's *best argument* and makes the call.
 
-The four modes share one core convergence loop and differ only in the artifact, the critique prompt, the apply-fixes semantics, and the deliverable.
+The four **negotiation** modes (plan/implement/verify/review) share one core convergence loop and differ only in the artifact, the critique prompt, the apply-fixes semantics, and the deliverable. A fifth mode, **audit**, is the folded-in *adversarial review*: a single-shot, fresh-eyes, N-way fan-out (claude + codex + agy) with FAIL-OR merge over arbitrary artifacts — no negotiation; it's the primitive other skills call. (`audit` absorbed the former standalone `adversarial-review` skill.)
 
 ## Modes
 
@@ -21,12 +21,15 @@ The four modes share one core convergence loop and differ only in the artifact, 
 | **implement** | `/converge implement` | The working tree against a stated goal (typically tied to a plan file) | `Edit`/`Write` on source files, with preview-then-apply on each diff | Working tree at converged state + `CONVERGE-LOG.md` at repo root |
 | **verify** | `/converge verify` | Test suites + formal-verification specs + CI config | `Edit`/`Write` on test/spec/CI files | Updated tests/specs/CI + `CONVERGE-LOG.md` |
 | **review** | `/converge review` | A diff against a base branch (local branch or PR #) | **No auto-apply** — produces findings only | `REVIEW.md` with cited issues + verdict |
+| **audit** | `/converge audit` | Arbitrary drafted artifacts (posts, plans, docs, tests, or a diff) composed into one prompt | **No auto-apply** — single-shot, no rounds | Canonical merged JSON (`{summary, verdicts[], reviewers}`) returned to the caller |
+
+`audit` is the **adversarial-review fold**: a fresh-eyes, N-way fan-out with FAIL-OR merge — not the iterative negotiation the other four run. See the `audit` mode section below.
 
 If the user types just `/converge` with no mode, infer from context (active plan file → `plan`; uncommitted changes → `implement` or `review`; otherwise ask) and confirm via AskUserQuestion before proceeding.
 
 ## Requirements
 
-- `codex` CLI on PATH (`which codex`). If absent: stop and tell the user to install it (`npm install -g @openai/codex`).
+- Reviewer CLIs on PATH: `codex` (`npm install -g @openai/codex`) and `agy`; `claude` is this agent. Negotiation runs claude + codex + agy by default; `audit` fans out to the same three. A reviewer whose CLI is absent is reported under `skipped` (audit) — or drop it from negotiation via `CONVERGE_REVIEWERS`.
 - The transport binary at `bin/converge` (built from the Go source in `go/`). If missing, run `bash build.sh` from the skill root — needs Go 1.25+, no external deps.
 - For modes `implement`, `verify`, `review`: a git repository at the working directory.
 - For mode `review`: either uncommitted changes, an active branch with commits ahead of base, or an explicit PR # passed as `/converge review <PR>`.
@@ -45,6 +48,7 @@ All transport work — codex invocation, diff retrieval, log formatting, schema 
 | `bin/converge codex-critique [--resume <thread-id>] [--model <m>] <prompt-file> [effort]` | Run `codex exec`. Streams `[codex Ns] reasoning/tool/message` events to stderr so the caller sees codex is alive. Stdout = final assistant message only. Round 1: starts a new thread, captures the thread id at `$CONVERGE_THREAD_OUT` (default `/tmp/converge-thread-<pid>.txt`). Rounds 2..N: pass `--resume <thread-id>` so codex doesn't re-read the artifact — round prompts include only the delta. Exits 3 (auth) / 4 (timeout) / 5 (no message). |
 | `bin/converge claude-critique [--resume <session-id>] [--model <m>] <prompt-file> [effort]` | Same shape as `codex-critique` but routes through the `claude` CLI (`claude -p ... --output-format stream-json`). Captures the session UUID for resume. `--model` defaults to `opus` (override with `$CONVERGE_CLAUDE_MODEL`). Same exit codes. |
 | `bin/converge llm-critique --provider {codex\|claude\|agent\|agy} [--resume <id>] [--model <m>] <prompt-file> [effort]` | Generic form — pick provider explicitly (`agy` replaced the deprecated `gemini`). The two `*-critique` subcommands are aliases. |
+| `bin/converge audit [--reviewers claude,codex,agy] [--prompt-file <p>] [--timeout <s>] [--quiet]` | **Adversarial review (fresh-eyes fan-out).** Fan the SAME composed prompt to all reviewers in parallel, parse each reviewer's JSON verdict, FAIL-OR merge with `[r1+r2+...]` issue attribution + graceful `skipped` degradation, emit canonical `{summary, verdicts[], reviewers, skipped}` JSON. Prompt from `--prompt-file` or stdin. Used by `audit` mode + `review` round 1. |
 | `bin/converge validate-critique <json>` | Validate against the embedded JSON Schema. Set `CONVERGE_REQUIRE_EVIDENCE=1` for implement/verify/review (forces `file`+`line_start`+`line_end`). |
 | `bin/converge smoke-check build\|test` | Project-type detection (`go.mod`, `Cargo.toml`, `package.json`, `pyproject.toml`) and run. Override with `$CONVERGE_SMOKE_BUILD` / `$CONVERGE_SMOKE_TEST`. |
 | `bin/converge log {init\|row\|smoke\|note} <file> ...` | LOG / REVIEW.md writer — header, dated `### Run YYYY-MM-DD HH:MM` subsection, table rows, smoke-check lines, free-form notes. |
@@ -53,7 +57,7 @@ All transport work — codex invocation, diff retrieval, log formatting, schema 
 
 When you invoke `codex-critique` (or `claude-critique` / `llm-critique`), **leave its stderr connected to your terminal** so the user sees the heartbeat. Set `CONVERGE_QUIET=1` only if explicitly asked.
 
-**Provider choice for the second reviewer:** the default is codex (matches the templates' "You are codex, the second reviewer" framing). To swap in claude as the second reviewer, you'd need to also update the prompt templates so the role identity matches — the existing `<mode>.tmpl` files hardcode "codex" in `<role>` and `<structured_output_contract>`. Until those are generalized, prefer `codex-critique` for the converge loop. The `claude-critique` subcommand is wired for use by skills with author-neutral templates (see `hegelian-dialectic`, whose synthesis prompts use `{{AUTHOR}}`).
+**Reviewers (3-way default).** Negotiation runs three independent reviewers — **claude** (this agent, in-context), **codex** (`codex-critique`), and **agy** (`llm-critique --provider agy`). The per-mode templates are **author-neutral**: render them with `REVIEWER_NAME`, `AUTHOR`, and `ID_PREFIX` (C=claude, K=codex, A=agy) so the *same* template serves both codex and agy. agy is one-shot (no thread resume), so on rounds 2..N resend the round delta rather than `--resume`. The agent honors `CONVERGE_REVIEWERS` (default `claude,codex,agy`) to decide which reviewer passes to run — set `CONVERGE_REVIEWERS=claude,codex` for a faster 2-way run.
 
 ## Common process
 
@@ -69,8 +73,8 @@ When you invoke `codex-critique` (or `claude-critique` / `llm-critique`), **leav
 4. Initialize the status snapshot: `bin/converge status start "$$" <mode> <max-rounds>`. Update it at every phase boundary with `bin/converge status round "$$" <round> <phase>`.
 5. Confirm scope and stop conditions with the user via **one** AskUserQuestion call. Defaults shown — accept them unless changed:
    - **Max rounds:** 5
-   - **Convergence threshold:** "both sides return ≤2 substantive issues AND ≥1 explicit agreement signal"
-   - **Deadlock surface:** "any single decision where Claude and Codex have re-stated opposing positions across 2 consecutive rounds"
+   - **Convergence threshold:** "all reviewers return ≤2 substantive issues (union) AND ≥1 explicit agreement signal"
+   - **Deadlock surface:** "any single decision where reviewers have re-stated opposing positions across 2 consecutive rounds"
    - **Mode-specific:**
      - `implement` only: "Auto-apply minor edits, pause on major scope changes" (default) or "Preview every edit"
      - `review` only: "Findings only, no auto-fix" (default)
@@ -131,87 +135,89 @@ For each issue in 2a where Claude proposes a fix:
 
 For implement/verify modes, after applying fixes, run a smoke check via `bin/converge smoke-check build` (implement) or `bin/converge smoke-check test` (verify). It detects project type and runs the right command; override with `$CONVERGE_SMOKE_BUILD` / `$CONVERGE_SMOKE_TEST` if the project needs something custom. Capture its stdout line and append via `bin/converge log smoke <log> "<line>"`. If it prints `FAIL`, **revert the round's edits** and surface the failure to the user before proceeding.
 
-#### 2c. Codex critique pass
+#### 2c. Codex and agy critique passes (each independent)
 
-Render the prompt from the embedded mode template — don't compose it inline. Each template (`plan`, `implement`, `verify`, `review`) is a tagged XML contract with `<role>`, `<task>`, `<operating_stance>`, `<attack_surface>`/`<plan_surface>`/`<coverage_surface>`, `<finding_bar>`, `<calibration_rules>`, `<grounding_rules>`, `<concession_rules>`, `<verification_loop>`, `<structured_output_contract>`, `<final_check>`. Sources: `go/internal/embedded/prompts/<mode>.tmpl`.
+Run this pass once per non-claude reviewer in `CONVERGE_REVIEWERS` (default: `codex`, then `agy`). Render the prompt from the embedded mode template — don't compose it inline. The templates are **author-neutral** tagged XML contracts; fill `REVIEWER_NAME`, `AUTHOR`, and `ID_PREFIX` so the same template serves each reviewer. `PRIOR_CRITIQUES` is the other reviewers' critiques available so far this round (at minimum claude's; include codex's when rendering agy's prompt so agy can concede to it). Sources: `go/internal/embedded/prompts/<mode>.tmpl`.
 
 ```bash
 ARTIFACT_FILE=/tmp/converge-artifact-r{r}.txt    # plan: full plan; implement/review: get-diff output; verify: tests+specs
-CRITIQUE_FILE=/tmp/converge-claude-r{r}.json     # claude's just-validated JSON
+PRIOR_FILE=/tmp/converge-prior-r{r}.txt          # other reviewers' critiques this round (claude's; +codex's when rendering agy)
 LOG_FILE=/tmp/converge-priorlog-r{r}.txt          # tail of the LOG table
 
+# codex → REVIEWER_NAME=codex AUTHOR=codex ID_PREFIX=K ; agy → REVIEWER_NAME=agy AUTHOR=agy ID_PREFIX=A
 bin/converge render-prompt <mode> \
   ROUND={r} MAX_ROUNDS={N} RESUME={0 or 1} \
+  REVIEWER_NAME=<reviewer> AUTHOR=<reviewer> ID_PREFIX=<K|A> \
   ARTIFACT=@$ARTIFACT_FILE \
   PRIOR_LOG=@$LOG_FILE \
-  CLAUDE_CRITIQUE=@$CRITIQUE_FILE \
-  > /tmp/converge-prompt-r{r}.txt
+  PRIOR_CRITIQUES=@$PRIOR_FILE \
+  > /tmp/converge-prompt-<reviewer>-r{r}.txt
 ```
 
-Round 1 (no thread yet):
+**codex** (thread-resumed — round 1 starts a thread, rounds 2..N resume it so codex re-reads only the delta; render with `RESUME=1` on rounds ≥2):
 
 ```bash
-bin/converge codex-critique /tmp/converge-prompt-r{r}.txt > /tmp/converge-codex-r{r}.json
+# round 1
+bin/converge codex-critique /tmp/converge-prompt-codex-r{r}.txt > /tmp/converge-codex-r{r}.json
 THREAD_ID=$(cat "${CONVERGE_THREAD_OUT:-/tmp/converge-thread-$$.txt}")
 bin/converge status thread "$$" "$THREAD_ID"
+# rounds 2..N
+bin/converge codex-critique --resume "$THREAD_ID" /tmp/converge-prompt-codex-r{r}.txt > /tmp/converge-codex-r{r}.json
 ```
 
-Round 2..N (resume the thread; the prompt template should set `RESUME=1`, which keeps the "focus only on the delta since your last critique" instruction. The prompt body for resumed rounds should contain only claude's new critique + the latest applied-fix diff, not the full artifact again):
+**agy** (one-shot — no thread resume; render with `RESUME=0` and carry the round delta in `PRIOR_CRITIQUES` each round):
 
 ```bash
-bin/converge codex-critique --resume "$THREAD_ID" /tmp/converge-prompt-r{r}.txt > /tmp/converge-codex-r{r}.json
+bin/converge llm-critique --provider agy /tmp/converge-prompt-agy-r{r}.txt > /tmp/converge-agy-r{r}.json
 ```
 
-The binary streams `[codex Ns] reasoning / tool / message` lines to stderr — **leave stderr connected to your terminal** so the user sees codex is alive. Stdout is the final assistant message only.
+Leave each call's stderr connected so the user sees the heartbeat. Exit codes (both): `3` (auth) → stop, tell the user to log in to that CLI; `4` (timeout) → treat that reviewer as skipped-by-timeout for the round and proceed with the rest; `5` (no message) → retry once with a stricter "Respond with JSON only" prompt, else treat that reviewer's verdict as `converged` for the round and note in LOG.
 
-Exit codes:
-- `3` (auth) → stop, tell user to run `codex login`
-- `4` (timeout, default 300s — `$CONVERGE_CODEX_TIMEOUT`) → treat as deadlocked-by-timeout, surface to user
-- `5` (no final message) → retry once with stricter "Respond with JSON only" prompt; if still empty, treat that side's verdict as `converged` for the round and let claude's critique drive — note in LOG
-
-After the call, validate the response:
+Validate each response (omit `CONVERGE_REQUIRE_EVIDENCE` for plan mode):
 
 ```bash
 CONVERGE_REQUIRE_EVIDENCE=1 bin/converge validate-critique /tmp/converge-codex-r{r}.json
+CONVERGE_REQUIRE_EVIDENCE=1 bin/converge validate-critique /tmp/converge-agy-r{r}.json
 ```
 
-(omit `CONVERGE_REQUIRE_EVIDENCE` for plan mode.)
+#### 2d. Apply codex's and agy's proposed fixes
 
-#### 2d. Apply Codex's proposed fixes
-
-Same edit rules as 2b. Skip in `review` mode (findings only).
+Same edit rules as 2b, applied for each reviewer's accepted fixes. Skip in `review` mode (findings only).
 
 #### 2e. Update CONVERGE LOG + status
 
-Append one row per pass:
+Append one row per reviewer pass:
 
 ```bash
-bin/converge log row <log> 1 claude needs_revision "C1, C2, C3" "(none)"
-bin/converge log row <log> 1 codex  needs_revision "K1, K2"     "C1"
-bin/converge status verdict "$$" claude needs_revision 3
+bin/converge log row <log> {r} claude needs_revision "C1, C2" "(none)"
+bin/converge log row <log> {r} codex  needs_revision "K1, K2" "C1"
+bin/converge log row <log> {r} agy    converged      "(none)" "C2, K1"
+bin/converge status verdict "$$" claude needs_revision 2
 bin/converge status verdict "$$" codex  needs_revision 2
+bin/converge status verdict "$$" agy    converged      0
 ```
 
-For `implement`/`verify`, also append the smoke-check line via `bin/converge log smoke <log> "<smoke-check stdout line>"` after each pass that ran one.
+For `implement`/`verify`, also append the smoke-check line via `bin/converge log smoke <log> "<smoke-check stdout line>"` after each round that ran one.
 
 #### 2f. Check stop conditions
 
-- **Convergence:** both `verdict == "converged"` in the same round → exit loop, go to Step 3.
-- **Soft convergence:** both verdicts are `needs_revision` but the union of substantive `issues` across both passes ≤ 2 AND `open_disagreements` is empty → ask the user via AskUserQuestion whether to call it converged or run one more round. Default: converge.
-- **Deadlock:** the same `open_disagreements` entry (matched by `claude_position` + `codex_position` similarity, or by repeated issue ids referenced as "still disputing K3") appears in 2 consecutive rounds → exit loop, go to Step 4.
+- **Convergence:** **all active reviewers** return `verdict == "converged"` in the same round → exit loop, go to Step 3.
+- **Soft convergence:** all verdicts are `needs_revision` but the union of substantive `issues` across all passes ≤ 2 AND no `open_disagreements` → ask the user via AskUserQuestion whether to call it converged or run one more round. Default: converge.
+- **Deadlock:** the same `open_disagreements` entry (matched by its `topic` + `positions` set, or by repeated issue ids referenced as "still disputing K3") appears in 2 consecutive rounds → exit loop, go to Step 4.
 - **Max rounds:** if `r == N` and not converged, exit loop, go to Step 4 with the unresolved disagreements.
 - **Smoke check failed twice in a row** (implement/verify only): exit loop, go to Step 4 — the artifact is not stable enough for further iteration without user input.
+- **A reviewer is unavailable** (auth/quota/timeout): proceed with the remaining reviewers for that round, note the skip in the LOG, and judge convergence over the reviewers that responded.
 
 ### Step 3 — Convergence path
 
 Print:
 
 ```
-✅ Claude and Codex converged on <artifact>. Mode: <mode>. R rounds.
+✅ All reviewers (claude + codex + agy) converged on <artifact>. Mode: <mode>. R rounds.
 
 Final state: <one-paragraph summary of what changed from the original>
 Issues resolved: <count>
-Concessions made: claude=N, codex=M
+Concessions made: claude=N, codex=M, agy=P
 Smoke checks: <pass count>/<total run> (implement/verify only)
 ```
 
@@ -221,12 +227,12 @@ Then write a final `### Converged Result Summary` subsection to the LOG capturin
 - **verify:** coverage delta, new property tests added, verifier-obligation count delta
 - **review:** N/A (review mode goes through Step 4 always — see below)
 
-For `review` mode, "convergence" means both reviewers signed off with verdict `converged`. Write `REVIEW.md` with:
+For `review` mode, "convergence" means all reviewers signed off with verdict `converged`. Write `REVIEW.md` with:
 
 ```markdown
 # Review of <branch> against <base>
 
-**Verdict:** APPROVED — both Claude and Codex signed off after R rounds.
+**Verdict:** APPROVED — all reviewers (claude + codex + agy) signed off after R rounds.
 
 ## Findings (resolved during review)
 <all issues raised across rounds, marked resolved>
@@ -242,33 +248,29 @@ Stop.
 For each unresolved `open_disagreement`, present the user a structured arbitration block. Use AskUserQuestion **one decision at a time** (per gstack AskUserQuestion conventions), with this exact preview structure:
 
 ```
-DEADLOCK #N — <one-line subject>
+DEADLOCK #N — <topic>
 
 Mode: <mode>
 Affected: <file path / plan section / test name>
 
-Claude's position:
-  <claude_position>
-  Best argument: <claude's strongest single sentence for their side>
-  What it costs if codex is right: <one sentence>
+Positions (one block per party in the open_disagreement's positions[]):
+  <author>: <position>
+    Best argument: <that reviewer's strongest single sentence>
+    Cost if another party is right: <one sentence>
+  ... repeat for each of claude / codex / agy present in positions[] ...
 
-Codex's position:
-  <codex_position>
-  Best argument: <codex's strongest single sentence for their side>
-  What it costs if claude is right: <one sentence>
-
-Recommendation: <if one side has a 70/30 lean, name it; else "genuine taste call — pick the one that fits your priorities">
+Recommendation: <if one position has a 70/30 lean, name it; else "genuine taste call — pick the one that fits your priorities">
 ```
 
-To get each side's "best argument," do a final adversarial pass:
-1. Internally: "You are committed to your position on DEADLOCK #N. Codex disagrees. Write your single strongest sentence and the cost of being wrong. Do not hedge."
-2. Send Codex an analogous prompt via `codex exec`.
+To get each party's "best argument," do a final adversarial pass per party:
+1. claude (you): "You are committed to your position on DEADLOCK #N; the others disagree. Write your single strongest sentence and the cost of being wrong. Do not hedge."
+2. codex: send the analogous prompt via `bin/converge codex-critique --resume "$THREAD_ID"`.
+3. agy: send the analogous prompt via `bin/converge llm-critique --provider agy`.
 
 Options:
-- A) Take Claude's side
-- B) Take Codex's side
-- C) Hybrid (user describes how to reconcile)
-- D) Defer (mark unresolved in LOG, move on)
+- A) Take a specific party's side (name claude / codex / agy)
+- B) Hybrid (user describes how to reconcile)
+- C) Defer (mark unresolved in LOG, move on)
 
 Apply the user's choice to the artifact (skip apply for `review` mode — record the decision in `REVIEW.md`). Append the user's decision + rationale to the LOG with author=`user`.
 
@@ -291,6 +293,74 @@ bin/converge cleanup
 
 `cleanup` removes per-round JSON, prompt, and thread-id files under `/tmp/converge-*`. The LOG / REVIEW files and the `status end`-finalized snapshot are the deliverable and are intentionally not touched.
 
+## Audit mode (folded-in adversarial review)
+
+`audit` is the **single-shot, fresh-eyes, N-way fan-out** that replaced the standalone `adversarial-review` skill. It does NOT run the Steps 0–5 negotiation loop — no rounds, no thread resume, no concede/converge. Every selected reviewer sees the SAME prompt independently and their verdicts merge with FAIL-OR. Use it to gate drafted artifacts (social posts, plans, docs, generated tests, a diff) before a human sees them, and as a callable primitive from other skills.
+
+**Fresh eyes are the point.** Pass the reviewers ONLY the source material + rules + drafts. Do NOT include any compose-phase context (intent, history, why the composer chose this) — that's what biases a reviewer into rationalizing problems away.
+
+### Inputs (the caller composes these into one prompt)
+
+| Field | Required | Description |
+|---|---|---|
+| `source_label` | yes | Label for the source material ("SOURCE ARTICLE", "ORIGINAL FILE", "SPEC"). |
+| `source_content` | yes | The full source the drafts must respect. |
+| `skill_name` | yes | Calling skill (e.g. `tease-newsletter`, `maximize-verification`). |
+| `artifact_name` | yes | Singular noun for each drafted item ("teaser", "patch", "post"). |
+| `rules_list` | yes (≥1) | The rules each draft MUST satisfy. |
+| `drafts` | yes (≥1) | The drafted items, each with a caller-assigned `id`. |
+| `issue_guidance` | optional | Hint on what citations to include. |
+
+Refuse to run (return the `parse_error` shape) if any required field is missing/empty or any draft lacks `content`.
+
+### Flow
+
+1. Assemble ONE prompt from the inputs (the binary owns transport + merge; composing is the caller's job):
+
+```
+You are an adversarial reviewer for /<<SKILL_NAME>> <<ARTIFACT_NAME>>s. Find problems before the user has to.
+
+<<SOURCE_LABEL>>:
+<<SOURCE_CONTENT>>
+
+RULES (must be enforced):
+<<RULES_LIST>>
+
+DRAFTED <<ARTIFACT_NAME>>s:
+<<DRAFTS as a numbered list, each with its draft_id and content>>
+
+For each draft return VERDICT ("PASS"/"FAIL") and ISSUES (cite exact substrings).
+Return ONLY this JSON, no prose:
+{"summary":"all_pass"|"some_fail","verdicts":[{"draft_id":"<id>","verdict":"PASS"|"FAIL","issues":["..."]}]}
+```
+
+2. Run the fan-out (default reviewers claude + codex + agy):
+
+```bash
+printf '%s' "$ASSEMBLED_PROMPT" | bin/converge audit
+# or: bin/converge audit --prompt-file /tmp/audit-prompt.txt --reviewers claude,codex,agy --timeout 300
+```
+
+3. Read the merged canonical JSON on stdout:
+
+```json
+{
+  "summary": "all_pass" | "some_fail" | "parse_error",
+  "verdicts": [{"draft_id":"<id>","verdict":"PASS"|"FAIL","issues":["[claude+codex] ...","[agy] ..."]}],
+  "reviewers": ["claude","codex","agy"],
+  "skipped": {"<reviewer>":"<reason>"}
+}
+```
+
+- **Merge rule:** a draft is FAIL if ANY reviewer flagged it FAIL; PASS only if every responding reviewer passed it. Issues are clustered across reviewers, each prefixed `[r1+r2+...]`.
+- **Graceful degradation:** a reviewer that quota-/auth-fails or times out lands in `skipped` (not `parse_error`); the rest still produce a verdict. All reviewers unusable → `summary:"parse_error"`, exit 2.
+
+### Caller responsibilities (not the binary's)
+
+- `all_pass` → proceed to user review. `some_fail` → revise drafts using the cited issues and re-run. `parse_error` → fix inputs or escalate.
+- **Never surface FAIL drafts to the user** — they should see only PASS-grade artifacts.
+- **Loop protection:** `audit` is a single-call primitive with no memory. If the same FAIL signature recurs 3× across revise/re-audit cycles, stop and escalate to the human (likely the rule is wrong, not the draft).
+
 ## Mode-specific guidance
 
 ### plan mode
@@ -301,7 +371,7 @@ bin/converge cleanup
 
 ### implement mode
 
-- Treat the active plan file (if any) as the contract. Convergence ≠ "code is perfect" — it's "code matches the plan and both reasoners see no remaining substantive issues."
+- Treat the active plan file (if any) as the contract. Convergence ≠ "code is perfect" — it's "code matches the plan and all reviewers see no remaining substantive issues."
 - Auto-apply only when the edit is a single-function change with no API surface impact. Anything that touches public types, public functions, or dependency files (`go.mod`, `Cargo.toml`, `package.json`) requires preview confirmation.
 - Run the smoke check (build + tests) every round. Two consecutive smoke-check failures exit to deadlock.
 - Pair this with `/converge verify` afterward — implement convergence does not guarantee adequate test coverage.
@@ -311,20 +381,20 @@ bin/converge cleanup
 - Critique focuses on what's *not* tested or proved, not on whether existing tests pass.
 - Treats the verifier toolchain as an oracle: if Gobra/Verus/cargo-test runs in the project, run it after every fix-application round and use the obligation/coverage delta as ground truth.
 - Coverage threshold is taken from the project's CI config if available; otherwise prompt the user.
-- Both reasoners are explicitly told that "100% line coverage" is a weak signal alone — they must propose property tests, edge cases, and adversarial inputs, not just trivial branch tests.
+- All reviewers are explicitly told that "100% line coverage" is a weak signal alone — they must propose property tests, edge cases, and adversarial inputs, not just trivial branch tests.
 
 ### review mode
 
 - Read-only with respect to the working tree. The deliverable is `REVIEW.md`.
 - Round 1 is each reasoner's independent diff review. Subsequent rounds are them critiquing each other's findings — letting one side overrule the other when its evidence is stronger.
 - A finding survives to `REVIEW.md` only if it has explicit evidence (file:line) and was not conceded by the originator in a later round.
-- Output verdict is `APPROVED` (both converged with no critical findings), `APPROVED_WITH_NITS` (only minor findings remain), `CHANGES_REQUESTED` (≥1 critical/major finding), or `BLOCKED` (deadlock the user must arbitrate).
+- Output verdict is `APPROVED` (all reviewers converged with no critical findings), `APPROVED_WITH_NITS` (only minor findings remain), `CHANGES_REQUESTED` (≥1 critical/major finding), or `BLOCKED` (deadlock the user must arbitrate).
 
 ## Failure modes & edge cases
 
 - **Codex auth error:** stop, tell user to run `codex login`. Artifact is left at whichever round-state it reached; LOG records the partial run.
 - **Plan file or diff is huge (>50KB):** warn the user; codex exec input has practical limits. Offer to converge on a subset (one section, one package, one file).
-- **Both sides converge in round 1:** still write the LOG with the single round; this is a successful no-op review.
+- **All reviewers converge in round 1:** still write the LOG with the single round; this is a successful no-op review.
 - **Same issue keeps reappearing:** that's a deadlock — surface it.
 - **Malformed JSON from one side:** `bin/converge validate-critique` will list the schema violations. Retry once with a stricter "Respond with JSON conforming to the schema, no prose" prompt; if still malformed, treat that side's verdict as `converged` for that round and let the other side's critique drive — note in LOG.
 - **User interrupts mid-round:** the artifact is always in a consistent post-edit (and post-smoke-check, for implement/verify) state at round boundaries. Resume with `/converge <mode>` — the LOG tells you where you left off.
@@ -347,7 +417,7 @@ The session id is `$$` of the prompt that started the run.
 
 ## What this skill is NOT
 
-- Not a way to launder a bad artifact into a "verified" one. Two AIs agreeing means they don't see further problems within their training, not that the artifact is correct.
+- Not a way to launder a bad artifact into a "verified" one. Reviewers agreeing means they don't see further problems within their training, not that the artifact is correct.
 - Not a substitute for `/plan-eng-review`, `/plan-ceo-review`, or human review when stakes are high.
 - Not for one-shot reviews — if you only want a single critique, use `/codex review` (diff) or `/codex` consult (plan).
 - Not an autonomous coder — implement mode pauses on scope-shifting edits and bails on broken builds.

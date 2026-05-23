@@ -1,10 +1,10 @@
 # Reusable Prompt Blocks
 
-XML blocks composed into the per-mode templates in this directory. Cherry-picked from `openai/codex-plugin-cc/plugins/codex/skills/gpt-5-4-prompting/references/prompt-blocks.md` and adapted for the converge two-AI loop.
+XML blocks composed into the per-mode templates in this directory. Cherry-picked from `openai/codex-plugin-cc/plugins/codex/skills/gpt-5-4-prompting/references/prompt-blocks.md` and adapted for the converge multi-AI loop (claude + codex + agy).
 
-Wrap each block in the XML tag shown in its heading. Tags must be stable so the second reviewer (codex or claude) can rely on the structure across rounds.
+Wrap each block in the XML tag shown in its heading. Tags must be stable so each reviewer can rely on the structure across rounds.
 
-**Provider neutrality (post-refactor):** the transport binary now supports both `codex` and `claude` as the second reviewer (see the `LLM transport` section in `converge/SKILL.md`). The blocks below still hardcode `"You are codex"` to match the existing converge per-mode templates. To author author-neutral templates (see the sibling `hegelian-dialectic` skill), substitute `{{REVIEWER_NAME}}` for `codex` in `<task>` / `<role>` and `{{AUTHOR}}` for the literal `"codex"` in `<structured_output_contract>`. The renderer (`bin/converge render-prompt KEY=val ...`) accepts arbitrary placeholders, so the same block can serve either provider when filled in at call time.
+**Author-neutral templates (post-fold):** the converge per-mode templates are now author-neutral so the *same* template serves claude, codex, and agy. Render with `{{REVIEWER_NAME}}` / `{{AUTHOR}}` (in `<role>` / `<structured_output_contract>`), `{{ID_PREFIX}}` (C=claude, K=codex, A=agy), and `{{PRIOR_CRITIQUES}}` (the other reviewers' critiques this round). The renderer (`bin/converge render-prompt KEY=val ...`) accepts arbitrary placeholders, so one block serves any reviewer when filled in at call time. The example snippets below still show the literal `codex` for illustration.
 
 ---
 

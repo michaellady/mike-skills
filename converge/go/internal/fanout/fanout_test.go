@@ -1,4 +1,4 @@
-package main
+package fanout
 
 import (
 	"strings"
@@ -129,7 +129,7 @@ func TestMerge_OnlyClaude(t *testing.T) {
 
 func TestMerge_ThreeWayCluster(t *testing.T) {
 	// All three flag the same problem (overlapping wording) → single
-	// "[claude+codex+agent]" attribution.
+	// "[claude+codex+agy]" attribution.
 	parsed := map[string]*reviewerResp{
 		"claude": {Verdicts: []verdict{
 			{DraftID: "a", Verdict: "FAIL", Issues: []string{"unverifiable claim about every leader"}},
@@ -137,16 +137,16 @@ func TestMerge_ThreeWayCluster(t *testing.T) {
 		"codex": {Verdicts: []verdict{
 			{DraftID: "a", Verdict: "FAIL", Issues: []string{"the unverifiable claim about every leader is not in source"}},
 		}},
-		"agent": {Verdicts: []verdict{
+		"agy": {Verdicts: []verdict{
 			{DraftID: "a", Verdict: "FAIL", Issues: []string{"contains an unverifiable claim about every leader"}},
 		}},
 	}
-	got := merge(parsed, selectedFor("claude", "codex", "agent"))
+	got := merge(parsed, selectedFor("claude", "codex", "agy"))
 	if len(got.Verdicts[0].Issues) != 1 {
 		t.Fatalf("want 1 clustered issue, got %d: %v", len(got.Verdicts[0].Issues), got.Verdicts[0].Issues)
 	}
-	if !strings.HasPrefix(got.Verdicts[0].Issues[0], "[claude+codex+agent]") {
-		t.Fatalf("want [claude+codex+agent] prefix, got %q", got.Verdicts[0].Issues[0])
+	if !strings.HasPrefix(got.Verdicts[0].Issues[0], "[claude+codex+agy]") {
+		t.Fatalf("want [claude+codex+agy] prefix, got %q", got.Verdicts[0].Issues[0])
 	}
 }
 
