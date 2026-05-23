@@ -11,6 +11,7 @@ The familiar pyramid — but the boundaries matter less than people think.
 - **Unit tests** — a single function/class in isolation. Fast, deterministic, cheap to run thousands of.
 - **Integration tests** — real collaborators wired together (DB, queue, filesystem). Catches the wiring bugs units can't.
 - **End-to-end / system tests** — the whole app through its real interface. Slow and flaky-prone, but the only thing that tests what the user actually experiences.
+- **Acceptance / BDD tests** — verify user-facing behavior against business-readable acceptance criteria, written as executable scenarios (specification-by-example). The spec doubles as a human-reviewable contract — which is exactly the "tests are the spec" lever. Tools: Cucumber/Gherkin, behave (Py), SpecFlow (.NET).
 - **Contract tests** — verify the interface between two services independently (Pact-style consumer-driven contracts). Lets you test an integration boundary without standing up both sides.
 - **Characterization / pinning tests** — Feathers' term: tests that capture *existing* behavior of legacy code before you touch it, even if that behavior is "wrong." The required first move for any refactor/port of code you don't fully understand.
 
@@ -22,15 +23,26 @@ Levels tell you *what scope*; strategy tells you *how you decide what's correct*
 
 - **Example-based** — the default: hand-pick inputs, assert outputs. Limited by your imagination — the core weakness for agent work, which is good at the happy path.
 - **Property-based** — assert invariants over machine-generated inputs. "Reversing twice is identity," "output is always sorted," "encode/decode round-trips." The generator finds edge cases you'd never enumerate. Tools: Hypothesis (Py), fast-check (JS/TS), proptest/quickcheck (Rust), jqwik (Java), gopter/rapid (Go).
+- **Stateful / model-based testing** — model the unit as a state machine; the tool generates *sequences* of operations and checks invariants/postconditions after each step. Catches lifecycle and ordering bugs that one-shot property tests can't see. Tools: Hypothesis `RuleBasedStateMachine`, proptest-state-machine (Rust), fast-check model-based commands, jqwik stateful, rapidcheck (C++). Essential for caches, queues, DBs, allocators.
 - **Metamorphic testing** — for when you have *no oracle*: test relations between outputs instead of absolute values. If `sort([3,1,2])` and `sort([2,1,3])` must be equal, you can test sorting without knowing the answer. Underused and powerful.
 - **Differential / conformance testing** — run two implementations on the same inputs and diff. **This is the "golden artifacts" idea: the old implementation is the oracle for the new one.** The safest spine for refactor/optimize/port work.
-- **Snapshot / golden / approval testing** — freeze a known-good output artifact, fail on any diff. Cheap to create, but rots if nobody reviews the diffs.
+- **Shadow / production differential** — the production-time form of differential testing: mirror *real* traffic to the old and new implementations in parallel and diff their outputs before promoting the new one. The canonical way to de-risk a rewrite at scale. Tools/patterns: GitHub Scientist, Twitter Diffy, dark launch, canary.
+- **N-version / redundancy** — run two or more *independently produced* implementations on the same inputs and diff or majority-vote. Generalizes differential testing to the case where no single impl is trusted; cross-model adversarial review is its LLM-authored form. The independence is the whole point — shared bugs defeat it.
+- **Snapshot / golden / approval testing** — freeze a known-good output artifact, fail on any diff. Cheap to create, but rots if nobody reviews the diffs. (The UI-shaped form is *visual regression*, below.)
+- **Visual regression** — snapshot the *rendered* output (a page, component, chart) and fail on pixel/layout diffs that DOM- and logic-level assertions never see. Tools: Percy, Chromatic, Playwright/Storybook screenshots. The UI-shaped form of snapshot testing.
 - **Mutation testing** — deliberately inject bugs and check whether the tests catch them. Measures *test quality*, not code coverage. Tools: Stryker (JS/TS), mutmut/cosmic-ray (Py), PIT (Java), cargo-mutants (Rust), go-mutesting (Go).
-- **Fuzzing** — coverage-guided input generation that finds crashes and panics in the input space. Tools: libFuzzer, AFL++, Go native fuzzing (`go test -fuzz`), cargo-fuzz, Atheris (Py).
+- **Fuzzing** — coverage-guided input generation that finds crashes and panics in the input space. Tools: libFuzzer, AFL++, Go native fuzzing (`go test -fuzz`), cargo-fuzz, Atheris (Py). Multiplies in value when run under sanitizers and with runtime contracts enabled.
+- **Sanitizers / dynamic analysis** — instrument a running program to catch memory-safety and undefined-behavior bugs that produce correct-looking output until they don't: AddressSanitizer (use-after-free, OOB), UndefinedBehaviorSanitizer, MemorySanitizer (uninit reads), LeakSanitizer, Valgrind, and Miri (Rust UB in `unsafe`). Distinct from race detection; critical for native/`unsafe`/cgo code.
+- **Symbolic / concolic execution & bounded model checking** — instead of guessing inputs, *solve* path constraints to reach a target path or trip an assertion — or prove no violation exists within a bound. Verifies the actual implementation. Tools: KLEE, SAGE, CrossHair (Py contracts), Kani (Rust BMC), CBMC/JBMC. The exhaustive-within-bounds complement to random fuzzing.
 - **Concurrency testing** — race detectors (`-race`, ThreadSanitizer), exhaustive interleaving explorers (Loom for Rust, jcstress for Java), and deterministic simulation testing (FoundationDB-style: Antithesis, madsim, turmoil). Essential for transaction-heavy, high-concurrency targets.
 - **Performance testing** — benchmarking, load, stress, soak, profiling. Part of "verify," not separate: an isomorphic-but-slower rewrite is a failed optimization.
-- **Static verification** — type systems, exhaustiveness checks, linters, abstract interpretation, formal methods (TLA+, Alloy, Stateright). Verifies *without executing* — the cheapest verification there is.
+- **Static verification** — type systems, exhaustiveness checks, linters and nullability analyzers (e.g., Error Prone/NullAway for Java), abstract interpretation. Two tiers worth distinguishing: **model checking** verifies an *abstraction* of the system (TLA+, Alloy, Stateright), while **deductive verification** proves the *actual code* against annotations (Dafny, Verus, Gobra, F*, Frama-C). Verifies *without executing* — the cheapest verification there is.
+- **Design-by-contract / runtime assertions** — embed preconditions, postconditions, and invariants in the code so every execution — production traffic and every fuzz/property case alike — becomes a check. Tools: `assert`/`debug_assert!`, icontract (Py), Eiffel, Ada/SPARK, Clojure spec.
+- **Contract testing** — verify a service/API boundary from each side independently (Pact-style consumer-driven contracts) so integration is checked without standing up both ends. (Also listed under *levels* — it's both a scope and a strategy.)
+- **Compatibility / migration testing** — for ports and persisted state: round-trip old↔new serialized data and wire formats, and test schema migrations forward *and* backward (upgrade/downgrade), so a rewrite doesn't silently lose or corrupt data.
+- **Combinatorial / pairwise testing** — for large configuration/feature-flag spaces, generate an all-pairs (or n-wise) covering set to catch interaction bugs without the full cross-product. Tools: PICT, ACTS, allpairspy.
 - **Chaos / fault injection** — kill processes, inject latency and errors, verify graceful degradation.
+- **Security testing** (adjacent axis) — SAST and taint analysis, DAST, dependency/SCA and secret scanning, and fuzzing-for-vulnerabilities. Outside pure correctness, but part of "maximally verify" for anything exposed.
 
 ---
 
@@ -58,7 +70,7 @@ Beyond that, in rough priority order:
 
 1. **Make tests the spec, and protect them.** Tests-first, with a human reviewing the test suite (not every impl line). Make test files read-only to the implementing agent, or split test-writing and code-writing into separate agents/contexts. Otherwise the agent reward-hacks: weakens assertions, adds `skip`, special-cases inputs, hardcodes expected values. Always diff the test files in review.
 2. **Hold out tests the agent never sees.** A private suite that runs only after the agent declares done — the generalization check against overfitting to the visible suite.
-3. **Lean on property-based and metamorphic tests.** Agents are systematically bad at edge cases and good at the happy path. Generators don't share that blind spot.
+3. **Lean on property-based, stateful, and metamorphic tests.** Agents are systematically bad at edge cases and ordering and good at the happy path. Generators — especially state-machine generators — don't share that blind spot.
 4. **Cross-model adversarial review.** A *different* model as validator has *different* failure modes, so it catches what the implementer's blind spot missed. Same-model review mostly rationalizes.
 5. **Shrink the blast radius.** Small diffs, pure functions, narrow typed interfaces. An isomorphic 30-line change is verifiable; a 600-line one is hope.
 6. **Push correctness into the compiler.** Strong types, exhaustiveness, linters with `-Werror`. Type errors are the highest-signal feedback you can give an agent — fast, precise, uncheatable.
@@ -76,8 +88,19 @@ A conformance harness *is* the **tap condition** — the loop's clean terminatio
 |---|---|---|---|---|
 | **Go** | gopter, pgregory.net/rapid | `go test -fuzz` (native) | go-mutesting, gremlins | `go test -race`, `testing/synctest` |
 | **Rust** | proptest, quickcheck | cargo-fuzz (libFuzzer), afl.rs | cargo-mutants | Loom, madsim, ThreadSanitizer |
-| **Python** | Hypothesis | Atheris | mutmut, cosmic-ray | — (GIL); pytest-asyncio for async |
+| **Python** | Hypothesis | Atheris | mutmut, cosmic-ray | — (GIL ≠ race-free; TSan for C-ext) |
 | **JS/TS** | fast-check | jsfuzz | Stryker | — |
-| **Java** | jqwik | Jazzer | PIT | jcstress, ThreadSanitizer (JVM) |
+| **Java** | jqwik | Jazzer | PIT | jcstress, Lincheck |
 
-Cross-language differential/conformance and golden-artifact testing are framework-agnostic — capture the old implementation's outputs over a corpus, run the new implementation on the same inputs, and diff. Deterministic simulation testing (FoundationDB-style) is available via Antithesis (hosted), madsim (Rust), and turmoil (Rust networking).
+### Analysis & specialized tools by language
+
+| Language | Stateful / model-based | Sanitizers & UB | Symbolic / BMC | Deductive proof |
+|---|---|---|---|---|
+| **Go** | rapid (state machines) | `-asan`, `-msan` (cgo/native) | — | Gobra |
+| **Rust** | proptest-state-machine | Miri, `-Zsanitizer=address/memory` | Kani (wraps CBMC) | Verus, Prusti, Creusot |
+| **Python** | Hypothesis `RuleBasedStateMachine` | (via C-ext ASan) | CrossHair | Nagini |
+| **JS/TS** | fast-check (model-based) | — | — | — |
+| **Java** | jqwik (stateful) | — | JBMC | KeY, OpenJML |
+| **C/C++** | rapidcheck | ASan/UBSan/MSan/LSan, Valgrind | CBMC, KLEE | Frama-C |
+
+Cross-language differential/conformance and golden-artifact testing are framework-agnostic — capture the old implementation's outputs over a corpus, run the new implementation on the same inputs, and diff. Deterministic simulation testing (FoundationDB-style) is available via Antithesis (hosted), madsim (Rust), and turmoil (Rust networking). Shadow / production differential is likewise framework-agnostic — GitHub Scientist (Ruby + ports), Twitter Diffy (HTTP services), or a hand-rolled mirror that tees real traffic to old + new and diffs.
