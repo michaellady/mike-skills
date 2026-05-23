@@ -106,8 +106,8 @@ Prompt + schema
                                          (set CONVERGE_REQUIRE_EVIDENCE=1 for
                                          implement/verify/review)
 
-LLM transport (codex or claude)
-  llm-critique --provider {codex|claude} [--resume <id>] [--model <m>]
+LLM transport (codex, claude, agent, or agy)
+  llm-critique --provider {codex|claude|agent|agy} [--resume <id>] [--model <m>]
                <prompt-file> [effort]    Run the chosen LLM, stream events to
                                          stderr, write final message to stdout.
                                          Captures session/thread id on round 1.
@@ -431,7 +431,7 @@ func runLLM(args []string, providerHint string) int {
 		switch args[0] {
 		case "--provider":
 			if len(args) < 2 {
-				fmt.Fprintf(os.Stderr, "usage: %s --provider {codex|claude} [--resume <id>] [--model <m>] <prompt-file> [effort]\n", subcmd)
+				fmt.Fprintf(os.Stderr, "usage: %s --provider {codex|claude|agent|agy} [--resume <id>] [--model <m>] <prompt-file> [effort]\n", subcmd)
 				return 2
 			}
 			providerName = args[1]
@@ -457,7 +457,7 @@ func runLLM(args []string, providerHint string) int {
 	}
 positional:
 	if providerName == "" {
-		fmt.Fprintln(os.Stderr, "llm-critique: --provider is required (codex|claude); or use codex-critique / claude-critique")
+		fmt.Fprintln(os.Stderr, "llm-critique: --provider is required (codex|claude|agent|agy); or use codex-critique / claude-critique")
 		return 2
 	}
 	if len(args) < 1 {
