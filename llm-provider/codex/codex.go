@@ -78,6 +78,14 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 		return provider.NewError(provider.ExitBadArgs, "cannot read prompt: %v", err)
 	}
 
+	// Model selection: explicit opts.Model > $CONVERGE_CODEX_MODEL > codex's own
+	// config.toml default. Passed as a `-c model=` config override (works on both
+	// fresh `exec` and `exec resume`, unlike the `-s` sandbox flag).
+	model := opts.Model
+	if model == "" {
+		model = os.Getenv("CONVERGE_CODEX_MODEL")
+	}
+
 	args := []string{"exec"}
 	if opts.ResumeID != "" {
 		args = append(args, "resume", opts.ResumeID)
@@ -96,6 +104,9 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 		"--enable", "web_search_cached",
 		"--json",
 	)
+	if model != "" {
+		args = append(args, "-c", fmt.Sprintf(`model="%s"`, model))
+	}
 
 	cctx, cancel := context.WithTimeout(ctx, opts.Timeout)
 	defer cancel()
