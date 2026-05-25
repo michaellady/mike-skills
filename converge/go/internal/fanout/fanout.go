@@ -53,6 +53,110 @@ type verdict struct {
 	Issues  []string `json:"issues"`
 }
 
+// UnmarshalJSON makes a verdict tolerant of the shape differences between reviewer CLIs.
+// The id field may arrive as "draft_id" or "id", and each issue may be a plain string OR
+// a structured object ({severity,file,line,issue,...}) — codex emits objects, agy emits
+// strings. Objects are flattened to a readable one-line string so the merge (which
+// clusters on string issues) works uniformly across reviewers. (Without this, codex's
+// object-shaped issues fail to unmarshal into []string and the whole reviewer is dropped
+// as a parse_error.)
+func (v *verdict) UnmarshalJSON(b []byte) error {
+	var aux struct {
+		DraftID string            `json:"draft_id"`
+		ID      string            `json:"id"`
+		Verdict string            `json:"verdict"`
+		Issues  []json.RawMessage `json:"issues"`
+	}
+	if err := json.Unmarshal(b, &aux); err != nil {
+		return err
+	}
+	v.DraftID = aux.DraftID
+	if v.DraftID == "" {
+		v.DraftID = aux.ID
+	}
+	v.Verdict = aux.Verdict
+	v.Issues = make([]string, 0, len(aux.Issues))
+	for _, raw := range aux.Issues {
+		if s := issueToString(raw); s != "" {
+			v.Issues = append(v.Issues, s)
+		}
+	}
+	return nil
+}
+
+// issueToString renders one issue element: a JSON string as-is, a structured issue object
+// as "[severity] file:line — message", else the raw JSON as a fallback (never dropped).
+func issueToString(raw json.RawMessage) string {
+	s := strings.TrimSpace(string(raw))
+	if s == "" || s == "null" {
+		return ""
+	}
+	if s[0] == '"' {
+		var str string
+		if err := json.Unmarshal([]byte(s), &str); err == nil {
+			return str
+		}
+		return s
+	}
+	var o struct {
+		Severity string `json:"severity"`
+		File     string `json:"file"`
+		Line     any    `json:"line"`
+		LineNum  any    `json:"line_start"`
+		Issue    string `json:"issue"`
+		Message  string `json:"message"`
+		Detail   string `json:"detail"`
+		Title    string `json:"title"`
+	}
+	if err := json.Unmarshal([]byte(s), &o); err != nil {
+		return s // unknown shape — keep the raw JSON rather than drop the finding
+	}
+	text := firstNonEmpty(o.Issue, o.Message, o.Detail, o.Title)
+	if text == "" {
+		return s
+	}
+	var sb strings.Builder
+	if o.Severity != "" {
+		fmt.Fprintf(&sb, "[%s] ", o.Severity)
+	}
+	if o.File != "" {
+		sb.WriteString(o.File)
+		if ln := lineString(o.Line, o.LineNum); ln != "" {
+			sb.WriteString(":" + ln)
+		}
+		sb.WriteString(" — ")
+	}
+	sb.WriteString(text)
+	return sb.String()
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// lineString renders the first present line number from candidate fields (JSON numbers
+// decode as float64; strings are passed through).
+func lineString(vals ...any) string {
+	for _, v := range vals {
+		switch n := v.(type) {
+		case float64:
+			if n != 0 {
+				return fmt.Sprintf("%d", int(n))
+			}
+		case string:
+			if n != "" {
+				return n
+			}
+		}
+	}
+	return ""
+}
+
 type reviewerResp struct {
 	Summary  string    `json:"summary"`
 	Verdicts []verdict `json:"verdicts"`

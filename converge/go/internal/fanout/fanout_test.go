@@ -32,6 +32,60 @@ func TestParseResponse_NoJSON(t *testing.T) {
 	}
 }
 
+// TestParseResponse_CodexObjectIssues covers the codex shape: the id field arrives as
+// "id" (not "draft_id") and each issue is a structured OBJECT, not a string. Before the
+// tolerant verdict.UnmarshalJSON, this failed to parse and the whole reviewer was dropped.
+func TestParseResponse_CodexObjectIssues(t *testing.T) {
+	in := `{
+	  "summary": "some_fail",
+	  "verdicts": [
+	    {"id": "1", "verdict": "PASS", "issues": []},
+	    {"id": "2", "verdict": "FAIL", "issues": [
+	      {"severity": "high", "file": "internal/x.go", "line": 114, "issue": "drops needs-review items"},
+	      {"severity": "medium", "file": "internal/y.go", "line_start": 7, "message": "lossy mapping"}
+	    ]}
+	  ]
+	}`
+	r, err := parseResponse(in)
+	if err != nil {
+		t.Fatalf("codex object-issues must parse, got error: %v", err)
+	}
+	if len(r.Verdicts) != 2 {
+		t.Fatalf("want 2 verdicts, got %d", len(r.Verdicts))
+	}
+	if r.Verdicts[0].DraftID != "1" || r.Verdicts[1].DraftID != "2" {
+		t.Fatalf("the \"id\" field should populate DraftID: %#v", r.Verdicts)
+	}
+	got := r.Verdicts[1].Issues
+	if len(got) != 2 {
+		t.Fatalf("want 2 flattened issues, got %d: %#v", len(got), got)
+	}
+	if !strings.Contains(got[0], "[high]") || !strings.Contains(got[0], "internal/x.go:114") || !strings.Contains(got[0], "drops needs-review items") {
+		t.Errorf("issue not flattened readably: %q", got[0])
+	}
+	if !strings.Contains(got[1], "internal/y.go:7") || !strings.Contains(got[1], "lossy mapping") {
+		t.Errorf("line_start/message not handled: %q", got[1])
+	}
+}
+
+// TestIssueToString covers the element renderer's branches directly.
+func TestIssueToString(t *testing.T) {
+	cases := map[string]string{
+		`"plain string"`:                    "plain string",
+		`null`:                              "",
+		`{"issue":"bare issue"}`:            "bare issue",
+		`{"severity":"low","title":"t"}`:    "[low] t",
+		`{"file":"a.go","detail":"d"}`:      "a.go — d",
+		`{"unknown":"shape"}`:               `{"unknown":"shape"}`, // no known text field → raw fallback
+		`{"severity":"high","message":"m"}`: "[high] m",
+	}
+	for in, want := range cases {
+		if got := issueToString([]byte(in)); got != want {
+			t.Errorf("issueToString(%s) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 // helper: build a selected []reviewerSpec from canonical names without
 // invoking actual provider constructors.
 func selectedFor(names ...string) []reviewerSpec {
