@@ -176,9 +176,10 @@ type mergedResp struct {
 // Order in `registeredReviewers` is the canonical reviewer order — also the
 // order issue attribution is rendered in (e.g. "[claude+codex+agy]").
 type reviewerSpec struct {
-	name string
-	cli  string // CLI name on PATH
-	make func() provider.Provider
+	name  string
+	cli   string // CLI name on PATH
+	model string // optional --model override passed to the provider ("" = provider default)
+	make  func() provider.Provider
 }
 
 // registeredReviewers is every provider the audit knows how to dispatch.
@@ -188,20 +189,28 @@ var registeredReviewers = []reviewerSpec{
 	{name: "claude", cli: "claude", make: func() provider.Provider { return claude.New() }},
 	{name: "codex", cli: "codex", make: func() provider.Provider { return codex.New() }},
 	{name: "agent", cli: "agent", make: func() provider.Provider { return agent.New() }},
+	// composer-2.5 and grok-build are Cursor `agent` CLI *models*, not separate
+	// binaries — same `agent` provider, pinned via --model. cli stays "agent"
+	// (PATH check), and runProvider keys its thread temp-file on `name` (not
+	// p.Name(), which is "agent" for all three) so concurrent runs don't collide.
+	{name: "composer-2.5", cli: "agent", model: "composer-2.5", make: func() provider.Provider { return agent.New() }},
+	{name: "grok-build", cli: "agent", model: "grok-build-0.1", make: func() provider.Provider { return agent.New() }},
 	{name: "agy", cli: "agy", make: func() provider.Provider { return agy.New() }},
 }
 
 // defaultReviewers is the comma-separated default for --reviewers.
 //
-// Default = claude + codex + agy: three independent agent families catch
-// different failure modes, and all three are reliable enough to run every time.
-// (`agy` replaced the deprecated `gemini` provider.) `agent` (Cursor) is
-// registered but OPT-IN — free/low-tier plans quota-fail on nearly every run.
+// Default = claude + codex + agy + composer-2.5 + grok-build: independent agent
+// families catch different failure modes. composer-2.5 and grok-build run via
+// the Cursor `agent` CLI and need a paid Cursor plan — on a free/low-tier plan
+// they quota-fail and land under `skipped`, so including them by default is
+// safe (they simply don't contribute when unavailable). The bare `agent`
+// provider stays OPT-IN to avoid a redundant `auto`-model run alongside these.
 //
 // Per-reviewer failures degrade gracefully: a reviewer that quota-fails,
 // auth-fails, or times out is reported under `skipped` (see unavailableReason),
 // NOT `parse_error` — so the remaining reviewers still produce a merged verdict.
-const defaultReviewers = "claude,codex,agy"
+const defaultReviewers = "claude,codex,agy,composer-2.5,grok-build"
 
 // Run executes one audit fan-out. args are the `converge audit` subcommand
 // args (flags only). Returns the desired process exit code.
@@ -215,7 +224,7 @@ func Run(args []string) int {
 	fs.IntVar(&timeoutSec, "timeout", 300, "per-reviewer timeout (seconds)")
 	fs.BoolVar(&quiet, "quiet", false, "suppress provider heartbeat lines on stderr")
 	fs.StringVar(&reviewersCSV, "reviewers", defaultReviewers,
-		"comma-separated reviewers to dispatch (registered: claude,codex,agent,agy)")
+		"comma-separated reviewers to dispatch (registered: claude,codex,agent,composer-2.5,grok-build,agy)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -256,7 +265,7 @@ func Run(args []string) int {
 		r := r
 		go func() {
 			defer wg.Done()
-			s, e := runProvider(r.make(), promptPath, timeoutSec, quiet)
+			s, e := runProvider(r.name, r.make(), r.model, promptPath, timeoutSec, quiet)
 			resultsCh <- result{name: r.name, out: s, err: e}
 		}()
 	}
@@ -376,15 +385,19 @@ func lookCLI(name string) (string, bool) {
 	return p, true
 }
 
-func runProvider(p provider.Provider, promptPath string, timeoutSec int, quiet bool) (string, error) {
+func runProvider(name string, p provider.Provider, model string, promptPath string, timeoutSec int, quiet bool) (string, error) {
 	var buf strings.Builder
 	opts := provider.Options{
 		PromptFile: promptPath,
+		Model:      model,
 		Timeout:    time.Duration(timeoutSec) * time.Second,
 		Quiet:      quiet,
 		Stdout:     &buf,
 		Stderr:     os.Stderr,
-		ThreadOut:  filepath.Join(os.TempDir(), fmt.Sprintf("converge-audit-%s-%d.thread", p.Name(), os.Getpid())),
+		// Key the thread temp-file on the reviewer's registry name, NOT
+		// p.Name(): agent / composer-2.5 / grok-build all return "agent", so
+		// using p.Name() would collide when several run concurrently.
+		ThreadOut: filepath.Join(os.TempDir(), fmt.Sprintf("converge-audit-%s-%d.thread", name, os.Getpid())),
 	}
 	err := p.Run(context.Background(), opts)
 	return buf.String(), err

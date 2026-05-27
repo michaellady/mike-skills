@@ -209,8 +209,9 @@ func TestSelectReviewers_Default(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Default = claude + codex + agy; agent is opt-in.
-	want := []string{"claude", "codex", "agy"}
+	// Default = claude + codex + agy + composer-2.5 + grok-build; the bare
+	// `agent` provider stays opt-in.
+	want := []string{"claude", "codex", "agy", "composer-2.5", "grok-build"}
 	if len(got) != len(want) {
 		t.Fatalf("default should be %v, got %d items", want, len(got))
 	}
@@ -222,6 +223,26 @@ func TestSelectReviewers_Default(t *testing.T) {
 	for _, r := range got {
 		if r.name == "agent" {
 			t.Fatalf("agent must NOT be in the default selection (opt-in only)")
+		}
+	}
+}
+
+func TestSelectReviewers_CursorModels(t *testing.T) {
+	got, err := selectReviewers("composer-2.5,grok-build")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Both route through the Cursor `agent` CLI, pinned to distinct models.
+	want := map[string]string{"composer-2.5": "composer-2.5", "grok-build": "grok-build-0.1"}
+	if len(got) != len(want) {
+		t.Fatalf("want %d reviewers, got %d", len(want), len(got))
+	}
+	for _, r := range got {
+		if r.cli != "agent" {
+			t.Fatalf("%s should dispatch via the agent CLI, got cli=%q", r.name, r.cli)
+		}
+		if r.model != want[r.name] {
+			t.Fatalf("%s: want model %q, got %q", r.name, want[r.name], r.model)
 		}
 	}
 }
