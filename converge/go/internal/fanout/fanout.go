@@ -53,6 +53,110 @@ type verdict struct {
 	Issues  []string `json:"issues"`
 }
 
+// UnmarshalJSON makes a verdict tolerant of the shape differences between reviewer CLIs.
+// The id field may arrive as "draft_id" or "id", and each issue may be a plain string OR
+// a structured object ({severity,file,line,issue,...}) — codex emits objects, agy emits
+// strings. Objects are flattened to a readable one-line string so the merge (which
+// clusters on string issues) works uniformly across reviewers. (Without this, codex's
+// object-shaped issues fail to unmarshal into []string and the whole reviewer is dropped
+// as a parse_error.)
+func (v *verdict) UnmarshalJSON(b []byte) error {
+	var aux struct {
+		DraftID string            `json:"draft_id"`
+		ID      string            `json:"id"`
+		Verdict string            `json:"verdict"`
+		Issues  []json.RawMessage `json:"issues"`
+	}
+	if err := json.Unmarshal(b, &aux); err != nil {
+		return err
+	}
+	v.DraftID = aux.DraftID
+	if v.DraftID == "" {
+		v.DraftID = aux.ID
+	}
+	v.Verdict = aux.Verdict
+	v.Issues = make([]string, 0, len(aux.Issues))
+	for _, raw := range aux.Issues {
+		if s := issueToString(raw); s != "" {
+			v.Issues = append(v.Issues, s)
+		}
+	}
+	return nil
+}
+
+// issueToString renders one issue element: a JSON string as-is, a structured issue object
+// as "[severity] file:line — message", else the raw JSON as a fallback (never dropped).
+func issueToString(raw json.RawMessage) string {
+	s := strings.TrimSpace(string(raw))
+	if s == "" || s == "null" {
+		return ""
+	}
+	if s[0] == '"' {
+		var str string
+		if err := json.Unmarshal([]byte(s), &str); err == nil {
+			return str
+		}
+		return s
+	}
+	var o struct {
+		Severity string `json:"severity"`
+		File     string `json:"file"`
+		Line     any    `json:"line"`
+		LineNum  any    `json:"line_start"`
+		Issue    string `json:"issue"`
+		Message  string `json:"message"`
+		Detail   string `json:"detail"`
+		Title    string `json:"title"`
+	}
+	if err := json.Unmarshal([]byte(s), &o); err != nil {
+		return s // unknown shape — keep the raw JSON rather than drop the finding
+	}
+	text := firstNonEmpty(o.Issue, o.Message, o.Detail, o.Title)
+	if text == "" {
+		return s
+	}
+	var sb strings.Builder
+	if o.Severity != "" {
+		fmt.Fprintf(&sb, "[%s] ", o.Severity)
+	}
+	if o.File != "" {
+		sb.WriteString(o.File)
+		if ln := lineString(o.Line, o.LineNum); ln != "" {
+			sb.WriteString(":" + ln)
+		}
+		sb.WriteString(" — ")
+	}
+	sb.WriteString(text)
+	return sb.String()
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// lineString renders the first present line number from candidate fields (JSON numbers
+// decode as float64; strings are passed through).
+func lineString(vals ...any) string {
+	for _, v := range vals {
+		switch n := v.(type) {
+		case float64:
+			if n != 0 {
+				return fmt.Sprintf("%d", int(n))
+			}
+		case string:
+			if n != "" {
+				return n
+			}
+		}
+	}
+	return ""
+}
+
 type reviewerResp struct {
 	Summary  string    `json:"summary"`
 	Verdicts []verdict `json:"verdicts"`
@@ -72,9 +176,10 @@ type mergedResp struct {
 // Order in `registeredReviewers` is the canonical reviewer order — also the
 // order issue attribution is rendered in (e.g. "[claude+codex+agy]").
 type reviewerSpec struct {
-	name string
-	cli  string // CLI name on PATH
-	make func() provider.Provider
+	name  string
+	cli   string // CLI name on PATH
+	model string // optional --model override passed to the provider ("" = provider default)
+	make  func() provider.Provider
 }
 
 // registeredReviewers is every provider the audit knows how to dispatch.
@@ -84,20 +189,28 @@ var registeredReviewers = []reviewerSpec{
 	{name: "claude", cli: "claude", make: func() provider.Provider { return claude.New() }},
 	{name: "codex", cli: "codex", make: func() provider.Provider { return codex.New() }},
 	{name: "agent", cli: "agent", make: func() provider.Provider { return agent.New() }},
+	// composer-2.5 and grok-build are Cursor `agent` CLI *models*, not separate
+	// binaries — same `agent` provider, pinned via --model. cli stays "agent"
+	// (PATH check), and runProvider keys its thread temp-file on `name` (not
+	// p.Name(), which is "agent" for all three) so concurrent runs don't collide.
+	{name: "composer-2.5", cli: "agent", model: "composer-2.5", make: func() provider.Provider { return agent.New() }},
+	{name: "grok-build", cli: "agent", model: "grok-build-0.1", make: func() provider.Provider { return agent.New() }},
 	{name: "agy", cli: "agy", make: func() provider.Provider { return agy.New() }},
 }
 
 // defaultReviewers is the comma-separated default for --reviewers.
 //
-// Default = claude + codex + agy: three independent agent families catch
-// different failure modes, and all three are reliable enough to run every time.
-// (`agy` replaced the deprecated `gemini` provider.) `agent` (Cursor) is
-// registered but OPT-IN — free/low-tier plans quota-fail on nearly every run.
+// Default = claude + codex + agy + composer-2.5 + grok-build: independent agent
+// families catch different failure modes. composer-2.5 and grok-build run via
+// the Cursor `agent` CLI and need a paid Cursor plan — on a free/low-tier plan
+// they quota-fail and land under `skipped`, so including them by default is
+// safe (they simply don't contribute when unavailable). The bare `agent`
+// provider stays OPT-IN to avoid a redundant `auto`-model run alongside these.
 //
 // Per-reviewer failures degrade gracefully: a reviewer that quota-fails,
 // auth-fails, or times out is reported under `skipped` (see unavailableReason),
 // NOT `parse_error` — so the remaining reviewers still produce a merged verdict.
-const defaultReviewers = "claude,codex,agy"
+const defaultReviewers = "claude,codex,agy,composer-2.5,grok-build"
 
 // Run executes one audit fan-out. args are the `converge audit` subcommand
 // args (flags only). Returns the desired process exit code.
@@ -111,7 +224,7 @@ func Run(args []string) int {
 	fs.IntVar(&timeoutSec, "timeout", 300, "per-reviewer timeout (seconds)")
 	fs.BoolVar(&quiet, "quiet", false, "suppress provider heartbeat lines on stderr")
 	fs.StringVar(&reviewersCSV, "reviewers", defaultReviewers,
-		"comma-separated reviewers to dispatch (registered: claude,codex,agent,agy)")
+		"comma-separated reviewers to dispatch (registered: claude,codex,agent,composer-2.5,grok-build,agy)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -152,7 +265,7 @@ func Run(args []string) int {
 		r := r
 		go func() {
 			defer wg.Done()
-			s, e := runProvider(r.make(), promptPath, timeoutSec, quiet)
+			s, e := runProvider(r.name, r.make(), r.model, promptPath, timeoutSec, quiet)
 			resultsCh <- result{name: r.name, out: s, err: e}
 		}()
 	}
@@ -272,15 +385,19 @@ func lookCLI(name string) (string, bool) {
 	return p, true
 }
 
-func runProvider(p provider.Provider, promptPath string, timeoutSec int, quiet bool) (string, error) {
+func runProvider(name string, p provider.Provider, model string, promptPath string, timeoutSec int, quiet bool) (string, error) {
 	var buf strings.Builder
 	opts := provider.Options{
 		PromptFile: promptPath,
+		Model:      model,
 		Timeout:    time.Duration(timeoutSec) * time.Second,
 		Quiet:      quiet,
 		Stdout:     &buf,
 		Stderr:     os.Stderr,
-		ThreadOut:  filepath.Join(os.TempDir(), fmt.Sprintf("converge-audit-%s-%d.thread", p.Name(), os.Getpid())),
+		// Key the thread temp-file on the reviewer's registry name, NOT
+		// p.Name(): agent / composer-2.5 / grok-build all return "agent", so
+		// using p.Name() would collide when several run concurrently.
+		ThreadOut: filepath.Join(os.TempDir(), fmt.Sprintf("converge-audit-%s-%d.thread", name, os.Getpid())),
 	}
 	err := p.Run(context.Background(), opts)
 	return buf.String(), err
