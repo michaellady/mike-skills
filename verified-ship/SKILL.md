@@ -32,7 +32,12 @@ Each state may only be entered after the prior state's result was **read**. Do n
 ```
 S0 EDIT        →  make the change in small groups; re-grep that each edit landed
                   (a cancelled batch silently drops edits — `grep -c` the change is present)
-S1 LOCAL GATE  →  run the full gate (e.g. `make verify`); READ the exit code + the coverage/test numbers
+S1 LOCAL GATE  →  run EVERY tier the required CI check runs, not just your default command; READ each
+                  exit code + the coverage/test numbers. The "full gate" = local↔CI PARITY: if the
+                  required check runs an integration/e2e/real-DB tier your fast command skips
+                  (e.g. `make verify` omits `make integration` — memory+mocks don't enforce FK/uniqueness/
+                  triggers, so a bad fixture is green locally, red in CI), run that tier too before pushing.
+                  A green PARTIAL gate is not the gate — same trap as arming before reading the audit.
                   ── gate red?  → back to S0. Never advance on red.
 S2 BRANCH      →  echo `git branch --show-current`; confirm it's the intended feature branch
 S3 COMMIT      →  write the message FROM the S1 numbers you just read (exact counts, real %)
