@@ -55,3 +55,4 @@ Result: the dead default got fixed in code in the same change, the deploy var wa
 
 - **maximize-verification** — same "oracle you didn't author" principle; this is its config/infra projection.
 - **verified-ship** — probe-before-wire is a pre-ship gate; the verified value then flows through verified-ship's read-gated pipeline, and "smoke-verified against `<env>`" is a fact you're then allowed to put in the PR body.
+- **ladder-the-failure** — the after to this before. If you skipped probing and a wired integration is now failing opaquely, ladder-the-failure is how you localize it to the owning layer (your wiring/IAM vs an org SCP vs an account subscription vs the provider's response format) instead of guessing.
