@@ -97,6 +97,7 @@ Apply these **whenever one agent writes both code and tests** (Step 0.3 flag). L
 6. **Shrink the blast radius** — small diffs, pure functions, narrow typed interfaces. An isomorphic 30-line change is verifiable; a 600-line one is hope. This is why an incremental hot-path strategy beats a big-bang rewrite.
 7. **Push correctness into the compiler** — strong types, exhaustiveness checks, linters with `-Werror`. Type errors are the highest-signal feedback you can give an agent: fast, precise, uncheatable.
 8. **Determinism** — seed everything; deterministic simulation for concurrency. A non-reproducible failure is one the agent can't debug and one whose fix you can't trust.
+9. **When you delegate the work, run the gate yourself — never trust the implementer's own green check.** If a subagent implemented (or you handed off the mechanical mirroring), its "100% / all tests pass" summary is the *implementer* reporting on its own work — the exact correlated-failure trap. Independently re-run the full gate (the suite, the coverage check, the build) in your own context and read the real numbers before you act on them. The point of delegation is parallelism, not a second source of truth; the verifier must be independent of the implementer. (Same reason cross-model review beats same-model review — the green check has to come from outside the thing that produced the code.)
 
 ## Step 4 — Wire in cross-model review
 

@@ -13,6 +13,8 @@ These are the source of truth; the installed copies under `~/.claude/skills/` ar
 | [converge](converge/) | Claude, Codex, agy, and the Cursor models Composer 2.5 & Grok Build iterate on an artifact until they converge — or surface a deadlock for you to arbitrate. Five modes: `plan`, `implement`, `verify`, `review`, `audit` (fresh-eyes adversarial review). Backed by a Go binary. |
 | [hegelian-dialectic](hegelian-dialectic/) | Works an artifact through an explicit thesis → antithesis → synthesis loop (Claude + Codex) until a transcendent position emerges or the dialectic stalls. Same artifact types as `converge`, different rhythm. |
 | [maximize-verification](maximize-verification/) | Stacks every independent check a piece of code admits (differential, property, metamorphic, fuzz, concurrency, static, cross-model) on the strongest available oracle — built to break the correlated-failure trap of one agent writing both code and its tests. |
+| [verified-ship](verified-ship/) | Hard READ-gate state machine for a gated ship pipeline (local verify → commit → push → CI → audit → auto-merge): every gate's real result must be read before advancing, and "run the audit" can never share a turn with "arm the merge." Stops a check being *claimed* without being *read*. |
+| [probe-before-wire](probe-before-wire/) | Before baking an external config value (model id, endpoint, ARN, region, image tag, credential) into code or a deploy, invoke the real dependency once against the target account and read the response — catch a dead/renamed/permission-blocked value at the source, not in production. `maximize-verification` applied to config/infra. |
 
 ### Skill lifecycle & meta
 
