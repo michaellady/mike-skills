@@ -32,6 +32,25 @@ func TestParseResponse_NoJSON(t *testing.T) {
 	}
 }
 
+// TestParseResponse_OffSchemaNoVerdicts is the regression for the false-green bug: a reviewer
+// that returns valid JSON in the flat critique shape ({"verdict":...,"issues":[...]}) — instead of
+// the audit schema with a verdicts[] array — must be rejected as a parse failure. Otherwise it
+// unmarshals to zero verdicts and merge() silently reports all_pass, dropping the reviewer's
+// findings. (Observed live: codex returned needs_revision with 3 critical issues, yet the run
+// reported all_pass.)
+func TestParseResponse_OffSchemaNoVerdicts(t *testing.T) {
+	cases := []string{
+		`{"verdict":"needs_revision","summary":"bad","issues":[{"id":"R1","severity":"critical","title":"x"}]}`,
+		`{"summary":"all_pass"}`,
+		`{"summary":"all_pass","verdicts":[]}`,
+	}
+	for _, in := range cases {
+		if _, err := parseResponse(in); err == nil {
+			t.Fatalf("expected a parse error for off-schema/zero-verdict response: %s", in)
+		}
+	}
+}
+
 // TestParseResponse_CodexObjectIssues covers the codex shape: the id field arrives as
 // "id" (not "draft_id") and each issue is a structured OBJECT, not a string. Before the
 // tolerant verdict.UnmarshalJSON, this failed to parse and the whole reviewer was dropped.

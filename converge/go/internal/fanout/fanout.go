@@ -454,6 +454,16 @@ func parseResponse(s string) (*reviewerResp, error) {
 	if err := json.Unmarshal([]byte(s), &r); err != nil {
 		return nil, err
 	}
+	// A response that unmarshals cleanly but carries NO verdicts did not follow the audit schema
+	// ({"summary":...,"verdicts":[{"draft_id","verdict":"PASS"|"FAIL","issues":[...]}]}) — e.g. a
+	// reviewer that emitted the flat critique shape {"verdict":...,"issues":[...]} instead, or any
+	// off-schema JSON object. Reject it as a parse failure rather than letting the caller record a
+	// silent zero-verdict reviewer: merge() would count those zero verdicts as no-FAIL and report
+	// all_pass — a FALSE GREEN in a merge-gating tool (a reviewer's needs_revision findings would
+	// vanish). Surfacing it as parse_error makes the non-compliance loud.
+	if len(r.Verdicts) == 0 {
+		return nil, fmt.Errorf("response has no verdicts (off-schema reviewer output?)")
+	}
 	return &r, nil
 }
 
