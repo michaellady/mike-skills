@@ -14,6 +14,7 @@ import (
 	"github.com/michaellady/mike-skills/converge/internal/embedded"
 	"github.com/michaellady/mike-skills/converge/internal/fanout"
 	"github.com/michaellady/mike-skills/converge/internal/gitops"
+	"github.com/michaellady/mike-skills/converge/internal/ledger"
 	"github.com/michaellady/mike-skills/converge/internal/logwriter"
 	"github.com/michaellady/mike-skills/converge/internal/plan"
 	"github.com/michaellady/mike-skills/converge/internal/preflight"
@@ -60,6 +61,8 @@ func Run(args []string) int {
 		return runLLM(rest, "")
 	case "audit":
 		return fanout.Run(rest)
+	case "ledger":
+		return runLedger(rest)
 	case "list-providers":
 		for _, n := range dispatch.Names() {
 			fmt.Println(n)
@@ -127,6 +130,20 @@ Adversarial audit (fresh-eyes fan-out — the folded adversarial-review)
                                          reviewers in parallel, FAIL-OR merge,
                                          emit canonical {summary,verdicts,...}
                                          JSON. Prompt from --prompt-file or stdin.
+
+Ledger (SQLite audit history for model comparison)
+  ledger stats                           Per-model table: audits participated,
+                                         responded/skipped/parse_error (+ rate),
+                                         findings by severity, and precision
+                                         (fixed / fixed+false_positive).
+  ledger findings [--limit N]            List the N most recent findings (ts,
+                                         severity, title, loc, raised_by,
+                                         finding_id, current disposition).
+  ledger disposition <finding_id> <kind> [--note ...] [--commit ...]
+                                         Record a finding's outcome; kind is
+                                         fixed | false_positive | wontfix.
+                                         DB path: $CONVERGE_LEDGER or
+                                         $HOME/.converge/ledger.db.
 
 Inspection
   list-modes                             List embedded prompt template modes
@@ -423,6 +440,87 @@ func runStatus(args []string) int {
 		return 2
 	}
 	return 0
+}
+
+// runLedger handles `converge ledger <action> ...`. Actions: stats, findings,
+// disposition.
+func runLedger(args []string) int {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: ledger stats | findings [--limit N] | disposition <finding_id> <kind> [--note ...] [--commit ...]")
+		return 2
+	}
+	action, rest := args[0], args[1:]
+	switch action {
+	case "stats":
+		if err := ledger.Stats(os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "ledger stats:", err)
+			return 1
+		}
+		return 0
+	case "findings":
+		limit := 20
+		for i := 0; i < len(rest); i++ {
+			if rest[i] == "--limit" {
+				if i+1 >= len(rest) {
+					fmt.Fprintln(os.Stderr, "usage: ledger findings [--limit N]")
+					return 2
+				}
+				n, err := strconv.Atoi(rest[i+1])
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "ledger findings: --limit must be an integer")
+					return 2
+				}
+				limit = n
+				i++
+			} else {
+				fmt.Fprintln(os.Stderr, "ledger findings: unexpected argument", rest[i])
+				return 2
+			}
+		}
+		if err := ledger.Findings(os.Stdout, limit); err != nil {
+			fmt.Fprintln(os.Stderr, "ledger findings:", err)
+			return 1
+		}
+		return 0
+	case "disposition":
+		if len(rest) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: ledger disposition <finding_id> <kind> [--note ...] [--commit ...]")
+			return 2
+		}
+		findingID, kind := rest[0], rest[1]
+		note, commit := "", ""
+		opt := rest[2:]
+		for i := 0; i < len(opt); i++ {
+			switch opt[i] {
+			case "--note":
+				if i+1 >= len(opt) {
+					fmt.Fprintln(os.Stderr, "ledger disposition: --note requires a value")
+					return 2
+				}
+				note = opt[i+1]
+				i++
+			case "--commit":
+				if i+1 >= len(opt) {
+					fmt.Fprintln(os.Stderr, "ledger disposition: --commit requires a value")
+					return 2
+				}
+				commit = opt[i+1]
+				i++
+			default:
+				fmt.Fprintln(os.Stderr, "ledger disposition: unexpected argument", opt[i])
+				return 2
+			}
+		}
+		if err := ledger.Disposition(findingID, kind, note, commit); err != nil {
+			fmt.Fprintln(os.Stderr, "ledger disposition:", err)
+			return 1
+		}
+		return 0
+	default:
+		fmt.Fprintln(os.Stderr, "ledger: unknown action", action)
+		fmt.Fprintln(os.Stderr, "usage: ledger stats | findings [--limit N] | disposition <finding_id> <kind> [--note ...] [--commit ...]")
+		return 2
+	}
 }
 
 // runLLM dispatches a critique call to the chosen provider. providerHint is

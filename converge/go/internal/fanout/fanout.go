@@ -29,6 +29,8 @@ package fanout
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -36,10 +38,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/michaellady/mike-skills/converge/internal/ledger"
 	"github.com/michaellady/mike-skills/llm-provider/agent"
 	"github.com/michaellady/mike-skills/llm-provider/agy"
 	"github.com/michaellady/mike-skills/llm-provider/claude"
@@ -215,18 +219,31 @@ const defaultReviewers = "claude,codex,agy,composer-2.5,grok-build"
 // Run executes one audit fan-out. args are the `converge audit` subcommand
 // args (flags only). Returns the desired process exit code.
 func Run(args []string) int {
+	start := time.Now()
 	fs := flag.NewFlagSet("audit", flag.ContinueOnError)
 	var promptFile string
 	var timeoutSec int
 	var quiet bool
 	var reviewersCSV string
+	var noLedger bool
+	var label string
+	var ledgerPath string
 	fs.StringVar(&promptFile, "prompt-file", "", "path to prompt file; if empty, read from stdin")
 	fs.IntVar(&timeoutSec, "timeout", 300, "per-reviewer timeout (seconds)")
 	fs.BoolVar(&quiet, "quiet", false, "suppress provider heartbeat lines on stderr")
 	fs.StringVar(&reviewersCSV, "reviewers", defaultReviewers,
 		"comma-separated reviewers to dispatch (registered: claude,codex,agent,composer-2.5,grok-build,agy)")
+	fs.BoolVar(&noLedger, "no-ledger", false, "do not record this audit to the SQLite ledger")
+	fs.StringVar(&label, "label", "", "label for the ledger audit row (defaults to the first draft id)")
+	fs.StringVar(&ledgerPath, "ledger", "", "ledger DB path (overrides CONVERGE_LEDGER for this run)")
 	if err := fs.Parse(args); err != nil {
 		return 2
+	}
+
+	// A --ledger flag points the ledger package at a specific DB by exporting
+	// CONVERGE_LEDGER, which is where ledger.open() looks first.
+	if ledgerPath != "" {
+		_ = os.Setenv("CONVERGE_LEDGER", ledgerPath)
 	}
 
 	selected, err := selectReviewers(reviewersCSV)
@@ -249,9 +266,10 @@ func Run(args []string) int {
 	}
 
 	type result struct {
-		name string
-		out  string
-		err  error
+		name      string
+		out       string
+		err       error
+		latencyMs int64
 	}
 	resultsCh := make(chan result, len(selected))
 	var wg sync.WaitGroup
@@ -265,15 +283,18 @@ func Run(args []string) int {
 		r := r
 		go func() {
 			defer wg.Done()
+			provStart := time.Now()
 			s, e := runProvider(r.name, r.make(), r.model, promptPath, timeoutSec, quiet)
-			resultsCh <- result{name: r.name, out: s, err: e}
+			resultsCh <- result{name: r.name, out: s, err: e, latencyMs: time.Since(provStart).Milliseconds()}
 		}()
 	}
 	wg.Wait()
 	close(resultsCh)
 
+	latencyByName := map[string]int64{}
 	parsed := map[string]*reviewerResp{}
 	for res := range resultsCh {
+		latencyByName[res.name] = res.latencyMs
 		if res.err != nil {
 			// A reviewer dispatched but unable to produce a verdict for reasons
 			// outside the audit (quota, auth, timeout) is "skipped", not a
@@ -298,6 +319,8 @@ func Run(args []string) int {
 	if len(parsed) == 0 {
 		out.Summary = "parse_error"
 		out.Error = "no reviewers returned a usable verdict (all skipped, errored, or malformed JSON)"
+		recordLedger(out, parsed, selected, promptPath, label, noLedger, latencyByName, time.Since(start).Milliseconds())
+		printReviewerLine(out, parsed, selected, quiet)
 		emit(out)
 		return 2
 	}
@@ -314,8 +337,174 @@ func Run(args []string) int {
 	if len(out.Skipped) == 0 {
 		out.Skipped = nil
 	}
+	recordLedger(out, parsed, selected, promptPath, label, noLedger, latencyByName, time.Since(start).Milliseconds())
+	printReviewerLine(out, parsed, selected, quiet)
 	emit(out)
 	return 0
+}
+
+// issueRe parses a merged issue string of the form
+// "[claude+codex] HIGH: title — detail (file:line)" into its attribution,
+// severity, and the remaining text. Issues that don't match are still recorded
+// (severity / raised_by empty).
+var issueRe = regexp.MustCompile(`^\[(?P<raised_by>[^\]]*)\]\s*(?P<sev>CRITICAL|HIGH|MEDIUM|LOW):\s*(?P<rest>.*)$`)
+
+// locRe captures a trailing parenthesized group that looks like "file:line".
+var locRe = regexp.MustCompile(`\(([^()]*:\d+)\)\s*$`)
+
+// recordLedger builds an AuditRecord from the merged result and persists it,
+// best-effort: any error is logged to stderr and otherwise ignored so the
+// audit's own exit code and stdout JSON are never affected. Skipped entirely
+// when noLedger is set.
+func recordLedger(out mergedResp, parsed map[string]*reviewerResp, selected []reviewerSpec, promptPath, label string, noLedger bool, latency map[string]int64, durationMs int64) {
+	if noLedger {
+		return
+	}
+
+	rec := ledger.AuditRecord{
+		AuditID:            ledger.NewAuditID(),
+		TS:                 time.Now().UTC().Format(time.RFC3339),
+		Label:              label,
+		Summary:            out.Summary,
+		PromptSHA256:       promptSHA256(promptPath),
+		ReviewersRequested: selectedNames(selected),
+		DurationMs:         durationMs,
+	}
+	if rec.Label == "" {
+		rec.Label = firstDraftID(out.Verdicts)
+	}
+
+	// One ReviewRow per SELECTED reviewer.
+	for _, r := range selected {
+		row := ledger.ReviewRow{Model: r.name, LatencyMs: latency[r.name]}
+		switch {
+		case parsed[r.name] != nil:
+			row.Status = "responded"
+			row.Verdict = parsed[r.name].Summary
+		case contains(out.ParseError, r.name):
+			row.Status = "parse_error"
+		case skippedHas(out.Skipped, r.name):
+			row.Status = "skipped"
+		default:
+			// Defensive: a selected reviewer that produced no signal at all
+			// is recorded as skipped rather than silently dropped.
+			row.Status = "skipped"
+		}
+		rec.Reviews = append(rec.Reviews, row)
+	}
+
+	// One FindingRow per merged issue across all verdicts.
+	for _, v := range out.Verdicts {
+		for _, issue := range v.Issues {
+			rec.Findings = append(rec.Findings, parseIssue(issue))
+		}
+	}
+
+	if err := ledger.Record(rec); err != nil {
+		fmt.Fprintf(os.Stderr, "audit: ledger: %v\n", err)
+	}
+}
+
+// parseIssue turns one merged issue string into a FindingRow. Title = text up to
+// the first " — " (em dash) or "(", whichever comes first; Loc = the last
+// parenthesized "file:line" group if present.
+func parseIssue(issue string) ledger.FindingRow {
+	raisedBy, severity, rest := "", "", issue
+	if m := issueRe.FindStringSubmatch(issue); m != nil {
+		raisedBy = m[issueRe.SubexpIndex("raised_by")]
+		severity = m[issueRe.SubexpIndex("sev")]
+		rest = m[issueRe.SubexpIndex("rest")]
+	}
+
+	loc := ""
+	if lm := locRe.FindStringSubmatch(rest); lm != nil {
+		loc = strings.TrimSpace(lm[1])
+	}
+
+	title := rest
+	if i := strings.Index(title, " — "); i >= 0 {
+		title = title[:i]
+	} else if i := strings.Index(title, "("); i >= 0 {
+		title = title[:i]
+	}
+	title = strings.TrimSpace(title)
+
+	return ledger.FindingRow{
+		FindingID: ledger.FindingID(loc, title),
+		Severity:  severity,
+		Title:     title,
+		Loc:       loc,
+		RaisedBy:  raisedBy,
+	}
+}
+
+// printReviewerLine prints ONE per-reviewer ground-truth line to STDERR
+// summarizing every SELECTED reviewer, e.g.:
+//
+//	reviewers: codex=responded(some_fail) claude=parse_error composer-2.5=skipped
+//
+// This makes a false all_pass impossible to miss. Suppressed under --quiet.
+func printReviewerLine(out mergedResp, parsed map[string]*reviewerResp, selected []reviewerSpec, quiet bool) {
+	if quiet {
+		return
+	}
+	parts := make([]string, 0, len(selected))
+	for _, r := range selected {
+		switch {
+		case parsed[r.name] != nil:
+			parts = append(parts, fmt.Sprintf("%s=responded(%s)", r.name, parsed[r.name].Summary))
+		case contains(out.ParseError, r.name):
+			parts = append(parts, fmt.Sprintf("%s=parse_error", r.name))
+		case skippedHas(out.Skipped, r.name):
+			parts = append(parts, fmt.Sprintf("%s=skipped", r.name))
+		default:
+			parts = append(parts, fmt.Sprintf("%s=skipped", r.name))
+		}
+	}
+	fmt.Fprintf(os.Stderr, "reviewers: %s\n", strings.Join(parts, " "))
+}
+
+func promptSHA256(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+func selectedNames(selected []reviewerSpec) string {
+	names := make([]string, 0, len(selected))
+	for _, r := range selected {
+		names = append(names, r.name)
+	}
+	return strings.Join(names, ",")
+}
+
+func firstDraftID(verdicts []verdict) string {
+	for _, v := range verdicts {
+		if v.DraftID != "" {
+			return v.DraftID
+		}
+	}
+	return ""
+}
+
+func contains(xs []string, s string) bool {
+	for _, x := range xs {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
+
+func skippedHas(m map[string]string, k string) bool {
+	if m == nil {
+		return false
+	}
+	_, ok := m[k]
+	return ok
 }
 
 // selectReviewers parses the comma-separated --reviewers flag against the

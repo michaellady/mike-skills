@@ -347,6 +347,78 @@ type errString string
 
 func (e errString) Error() string { return string(e) }
 
+func TestParseIssue(t *testing.T) {
+	cases := []struct {
+		name       string
+		issue      string
+		wantSev    string
+		wantTitle  string
+		wantLoc    string
+		wantRaised string
+	}{
+		{
+			name:       "full shape em-dash and loc",
+			issue:      "[claude+codex+grok-build] HIGH: drops needs-review items — silently maps to PASS (internal/x.go:114)",
+			wantSev:    "HIGH",
+			wantTitle:  "drops needs-review items",
+			wantLoc:    "internal/x.go:114",
+			wantRaised: "claude+codex+grok-build",
+		},
+		{
+			name:       "title ends at first paren when no em-dash",
+			issue:      "[codex] MEDIUM: lossy mapping (internal/y.go:7)",
+			wantSev:    "MEDIUM",
+			wantTitle:  "lossy mapping",
+			wantLoc:    "internal/y.go:7",
+			wantRaised: "codex",
+		},
+		{
+			name:       "no loc",
+			issue:      "[claude] LOW: minor nit — cosmetic",
+			wantSev:    "LOW",
+			wantTitle:  "minor nit",
+			wantLoc:    "",
+			wantRaised: "claude",
+		},
+		{
+			name:       "off-shape issue still recorded with empty sev/raised_by",
+			issue:      "freeform note without the bracket/severity shape",
+			wantSev:    "",
+			wantTitle:  "freeform note without the bracket/severity shape",
+			wantLoc:    "",
+			wantRaised: "",
+		},
+		{
+			name:       "critical with loc but no em-dash or paren in title",
+			issue:      "[grok-build] CRITICAL: nil deref (pkg/a.go:42)",
+			wantSev:    "CRITICAL",
+			wantTitle:  "nil deref",
+			wantLoc:    "pkg/a.go:42",
+			wantRaised: "grok-build",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseIssue(tc.issue)
+			if got.Severity != tc.wantSev {
+				t.Errorf("severity = %q, want %q", got.Severity, tc.wantSev)
+			}
+			if got.Title != tc.wantTitle {
+				t.Errorf("title = %q, want %q", got.Title, tc.wantTitle)
+			}
+			if got.Loc != tc.wantLoc {
+				t.Errorf("loc = %q, want %q", got.Loc, tc.wantLoc)
+			}
+			if got.RaisedBy != tc.wantRaised {
+				t.Errorf("raised_by = %q, want %q", got.RaisedBy, tc.wantRaised)
+			}
+			if got.FindingID == "" || len(got.FindingID) != 16 {
+				t.Errorf("finding_id should be 16 hex chars, got %q", got.FindingID)
+			}
+		})
+	}
+}
+
 func TestIssueOverlaps(t *testing.T) {
 	cases := []struct {
 		a, b string
