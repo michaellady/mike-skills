@@ -15,10 +15,25 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/michaellady/mike-skills/llm-provider/provider"
 )
+
+// agentMu serializes invocations of the Cursor `agent` CLI. The CLI rewrites
+// ~/.cursor/cli-config.json on startup (a temp-file write + rename); two `agent`
+// processes launched concurrently race on that rename and one dies with
+// "ENOENT: no such file or directory, rename '.cursor/cli-config.json.tmp' ->
+// '.cursor/cli-config.json'" (leaving a cli-config.json.bad). converge's audit
+// runs composer-2.5 and grok-build — both the `agent` CLI, distinguished only by
+// --model — in one fan-out, so without this they collide and one is lost as a skip.
+// Holding the lock across the whole run is the simplest provably race-free fix; the
+// two Cursor models run back-to-back rather than concurrently (a bounded latency
+// cost, worth a reliable verdict from both). Other providers (claude/codex/agy)
+// never take this lock, so they stay fully parallel. A future optimization could
+// release the lock once the config write settles instead of after the whole run.
+var agentMu sync.Mutex
 
 // Provider satisfies provider.Provider for the Cursor agent CLI.
 type Provider struct{}
@@ -102,7 +117,11 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 		fmt.Fprintf(opts.Stderr, "[agent] starting (timeout=%s)\n", opts.Timeout)
 	}
 
+	// Serialize the actual CLI run so concurrent `agent` invocations (e.g.
+	// composer-2.5 + grok-build in one audit) don't race on ~/.cursor/cli-config.json.
+	agentMu.Lock()
 	runErr := cmd.Run()
+	agentMu.Unlock()
 
 	if cctx.Err() == context.DeadlineExceeded {
 		return provider.NewError(provider.ExitTimeout, "agent timed out after %s", opts.Timeout)

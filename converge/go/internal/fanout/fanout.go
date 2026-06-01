@@ -643,17 +643,83 @@ func parseResponse(s string) (*reviewerResp, error) {
 	if err := json.Unmarshal([]byte(s), &r); err != nil {
 		return nil, err
 	}
-	// A response that unmarshals cleanly but carries NO verdicts did not follow the audit schema
-	// ({"summary":...,"verdicts":[{"draft_id","verdict":"PASS"|"FAIL","issues":[...]}]}) — e.g. a
-	// reviewer that emitted the flat critique shape {"verdict":...,"issues":[...]} instead, or any
-	// off-schema JSON object. Reject it as a parse failure rather than letting the caller record a
-	// silent zero-verdict reviewer: merge() would count those zero verdicts as no-FAIL and report
-	// all_pass — a FALSE GREEN in a merge-gating tool (a reviewer's needs_revision findings would
-	// vanish). Surfacing it as parse_error makes the non-compliance loud.
+	// If the reviewer didn't emit the wrapped contract ({"summary":...,"verdicts":[{"draft_id",
+	// "verdict":"PASS"|"FAIL","issues":[...]}]}), it most often returned the FLAT single-verdict
+	// critique shape instead — {"verdict":"pass"|"fail"|"needs_revision", and one of
+	// "issues"/"findings"/"blocking":[...]}. Recover THAT as a single unnamed-draft verdict rather
+	// than discarding the whole reviewer as a parse_error (the old behavior, which threw away a real
+	// PASS/FAIL — agy/composer/grok routinely emit the flat shape). The false-green guard still holds:
+	// we extract the actual verdict, so a flat needs_revision/fail becomes a FAIL in the merge — it
+	// does NOT silently pass. Only a response with no verdicts AND no normalizable flat verdict is a
+	// genuine parse failure (kept loud as parse_error).
 	if len(r.Verdicts) == 0 {
-		return nil, fmt.Errorf("response has no verdicts (off-schema reviewer output?)")
+		fv, ok := parseFlatVerdict(s)
+		if !ok {
+			return nil, fmt.Errorf("response has no verdicts and no recognizable flat verdict (off-schema reviewer output?)")
+		}
+		r.Verdicts = []verdict{*fv}
 	}
 	return &r, nil
+}
+
+// parseFlatVerdict adapts the flat single-verdict critique shape a reviewer
+// sometimes emits — {"verdict":"pass"|"fail"|"needs_revision", and one of
+// "issues"/"findings"/"blocking"/"blocking_findings":[...]} — into a single
+// unnamed-draft (DraftID="") verdict. It returns false when the verdict word can't
+// be normalized to PASS/FAIL, so the caller keeps the loud parse_error rather than
+// guessing a pass — preserving the merge-gating false-green guard.
+func parseFlatVerdict(s string) (*verdict, bool) {
+	var aux struct {
+		Verdict          string            `json:"verdict"`
+		Issues           []json.RawMessage `json:"issues"`
+		Findings         []json.RawMessage `json:"findings"`
+		Blocking         []json.RawMessage `json:"blocking"`
+		BlockingFindings []json.RawMessage `json:"blocking_findings"`
+	}
+	if err := json.Unmarshal([]byte(s), &aux); err != nil {
+		return nil, false
+	}
+	nv := normalizeVerdict(aux.Verdict)
+	if nv == "" {
+		return nil, false
+	}
+	raws := firstNonEmptyRaw(aux.Issues, aux.Findings, aux.Blocking, aux.BlockingFindings)
+	issues := make([]string, 0, len(raws))
+	for _, raw := range raws {
+		if str := issueToString(raw); str != "" {
+			issues = append(issues, str)
+		}
+	}
+	return &verdict{DraftID: "", Verdict: nv, Issues: issues}, true
+}
+
+// firstNonEmptyRaw returns the first non-empty []json.RawMessage from the candidates.
+func firstNonEmptyRaw(lists ...[]json.RawMessage) []json.RawMessage {
+	for _, l := range lists {
+		if len(l) > 0 {
+			return l
+		}
+	}
+	return nil
+}
+
+// normalizeVerdict maps a reviewer's free-form verdict word to the merge's
+// canonical "PASS"/"FAIL", or "" if unrecognized. Fail-ish words are checked FIRST
+// so "needs_revision" resolves to FAIL before any pass match. Case-insensitive and
+// substring-based, so it also accepts the already-canonical "PASS"/"FAIL".
+func normalizeVerdict(s string) string {
+	l := strings.ToLower(strings.TrimSpace(s))
+	switch {
+	case l == "":
+		return ""
+	case strings.Contains(l, "fail"), strings.Contains(l, "revis"),
+		strings.Contains(l, "reject"), strings.Contains(l, "block"):
+		return "FAIL"
+	case strings.Contains(l, "pass"), strings.Contains(l, "approve"),
+		strings.Contains(l, "lgtm"):
+		return "PASS"
+	}
+	return ""
 }
 
 // merge consolidates verdicts across N reviewers using the FAIL-OR rule:

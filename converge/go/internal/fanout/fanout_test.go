@@ -32,21 +32,83 @@ func TestParseResponse_NoJSON(t *testing.T) {
 	}
 }
 
-// TestParseResponse_OffSchemaNoVerdicts is the regression for the false-green bug: a reviewer
-// that returns valid JSON in the flat critique shape ({"verdict":...,"issues":[...]}) — instead of
-// the audit schema with a verdicts[] array — must be rejected as a parse failure. Otherwise it
-// unmarshals to zero verdicts and merge() silently reports all_pass, dropping the reviewer's
-// findings. (Observed live: codex returned needs_revision with 3 critical issues, yet the run
-// reported all_pass.)
+// TestParseResponse_OffSchemaNoVerdicts: a response with NO recognizable verdict — neither a
+// verdicts[] array nor a flat "verdict" word that normalizes to PASS/FAIL — is a genuine parse
+// failure, kept loud so the reviewer is NOT silently recorded as a zero-verdict all_pass (the
+// original false-green bug). A flat verdict that DOES carry a pass/fail word is instead recovered —
+// see TestParseResponse_FlatVerdictRecovered.
 func TestParseResponse_OffSchemaNoVerdicts(t *testing.T) {
 	cases := []string{
-		`{"verdict":"needs_revision","summary":"bad","issues":[{"id":"R1","severity":"critical","title":"x"}]}`,
 		`{"summary":"all_pass"}`,
 		`{"summary":"all_pass","verdicts":[]}`,
+		`{"verdict":"???","issues":[]}`, // verdict present but not normalizable → still parse_error
 	}
 	for _, in := range cases {
 		if _, err := parseResponse(in); err == nil {
 			t.Fatalf("expected a parse error for off-schema/zero-verdict response: %s", in)
+		}
+	}
+}
+
+// TestParseResponse_FlatVerdictRecovered: reviewers (agy/composer-2.5/grok-build, and any custom
+// single-draft prompt) routinely emit the FLAT critique shape — {"verdict":..., and one of
+// "findings"/"issues"/"blocking":[...]} — instead of the wrapped {summary,verdicts:[...]} contract.
+// parseResponse now recovers that as ONE unnamed-draft verdict rather than dropping the reviewer as
+// parse_error, while still extracting the real PASS/FAIL so the merge gate sees a needs_revision/fail
+// as a FAIL (no false green — the verdict is honored, not silently passed).
+func TestParseResponse_FlatVerdictRecovered(t *testing.T) {
+	cases := []struct {
+		in      string
+		verdict string
+		issue   string // substring expected in the recovered verdict's issues, or "" to skip
+	}{
+		{`{"verdict":"pass","findings":[]}`, "PASS", ""},
+		{`{"verdict":"needs_revision","summary":"bad","issues":[{"severity":"critical","message":"x"}]}`, "FAIL", "x"},
+		{`{"verdict":"fail","blocking":[{"message":"boom"}]}`, "FAIL", "boom"},
+		{`{"verdict":"approve"}`, "PASS", ""},
+	}
+	for _, c := range cases {
+		r, err := parseResponse(c.in)
+		if err != nil {
+			t.Fatalf("parseResponse(%s) unexpected error: %v", c.in, err)
+		}
+		if len(r.Verdicts) != 1 {
+			t.Fatalf("parseResponse(%s): want 1 verdict, got %d", c.in, len(r.Verdicts))
+		}
+		v := r.Verdicts[0]
+		if v.Verdict != c.verdict {
+			t.Errorf("parseResponse(%s): verdict = %q, want %q", c.in, v.Verdict, c.verdict)
+		}
+		if v.DraftID != "" {
+			t.Errorf("parseResponse(%s): DraftID = %q, want empty (unnamed draft)", c.in, v.DraftID)
+		}
+		if c.issue != "" {
+			found := false
+			for _, is := range v.Issues {
+				if strings.Contains(is, c.issue) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("parseResponse(%s): issues %v missing %q", c.in, v.Issues, c.issue)
+			}
+		}
+	}
+}
+
+// TestNormalizeVerdict covers the free-form verdict-word → PASS/FAIL mapping, incl. fail-ish
+// precedence (needs_revision is FAIL, not a stray pass match) and the unknown → "" case.
+func TestNormalizeVerdict(t *testing.T) {
+	cases := map[string]string{
+		"PASS": "PASS", "pass": "PASS", "Approve": "PASS", "LGTM": "PASS",
+		"FAIL": "FAIL", "fail": "FAIL", "needs_revision": "FAIL", "needs revision": "FAIL",
+		"reject": "FAIL", "blocking": "FAIL",
+		"": "", "maybe": "", "???": "",
+	}
+	for in, want := range cases {
+		if got := normalizeVerdict(in); got != want {
+			t.Errorf("normalizeVerdict(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
