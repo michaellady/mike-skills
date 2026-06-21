@@ -35,7 +35,7 @@ Establish these five facts. Infer from context where you can; ask **at most one*
 1. **Change type** — greenfield / refactor-or-optimize-with-existing-impl / port (language A→B) / legacy-modification.
 2. **Oracle availability** — is there an old implementation? a reference implementation? a formal spec? an external golden dataset? or nothing?
 3. **Authorship** — did/will the *same* agent write both the code and the tests? (This is the correlated-failure flag.)
-4. **Nature** — concurrency-/transaction-heavy? performance-critical? parses untrusted input? distributed/fault-tolerant? (Each opens an additional independent verification layer in Step 2.)
+4. **Nature** — concurrency-/transaction-heavy? performance-critical? parses untrusted input? distributed/fault-tolerant? long-running / holds resources? time-dependent? stochastic/ML/LLM? user-facing UI? (Each opens an additional independent verification layer in Step 2.)
 5. **Current verification** — none / example tests / property tests / a reported coverage number.
 
 ## Step 1 — Establish the strongest oracle (the foundation)
@@ -77,7 +77,7 @@ This is where verification is *maximized*. Each layer below is a distinct failur
 | **N-version / redundancy** | Bugs shared by a single implementation+test pair — broken by *independently produced* impls that diff or majority-vote | No single trusted oracle, but you can afford ≥2 independent impls/generators. Generalizes differential; independence is the whole point. |
 | **Cross-model adversarial review** | What the *implementer model's* blind spot missed — a different family fails differently | Whenever an agent wrote both code and tests. The LLM-authored form of N-version; wire to `/converge audit` (Step 4). |
 
-**Tier 3 — Nature-triggered** (turn on per the Step 0.4 facts — concurrency / perf / untrusted-input / distributed / stateful / stochastic / UI):
+**Tier 3 — Nature-triggered** (turn on per the Step 0.4 facts — concurrency / perf / untrusted-input / distributed / stateful / stochastic / time-dependent / long-running / ML-LLM / UI):
 
 | Layer | Catches (→ REFERENCE.md) | Turn on when |
 |---|---|---|
@@ -97,6 +97,11 @@ This is where verification is *maximized*. Each layer below is a distinct failur
 | **Chaos / fault injection** | Failure to degrade gracefully under killed processes, latency, partial outages | Distributed or fault-tolerant systems. |
 | **Observability / telemetry-emission** | Silent monitoring failure — the error path doesn't emit the metric, the span is missing — while functional output is correct | Code whose failures must be observable (prod services). Assert the code *emits* the critical event + approved dimensions via an in-memory exporter; never snapshot full log text. |
 | **Shadow / production differential** | Divergences that surface only on *real* traffic and state — the production-time form of the differential oracle | Cutting over a rewrite/optimization in a live system. Mirror real traffic to old + new and diff before promoting (GitHub Scientist, Twitter Diffy, canary). |
+| **Resource-leak / liveness** | Leaked goroutines/FDs/connections/timers — correct output, but the process exhausts a limit over time | Long-running services or anything spawning concurrency / holding handles. Snapshot resource counts before/after and assert baseline (goleak). Distinct from the sanitizers row — liveness, not memory. |
+| **Distributed consistency / linearizability** | Consistency violations under concurrency + partition — invisible to single-node tests | Replicated stores, consensus, multi-node transactions. Check client histories against a consistency model (Jepsen + Elle/Knossos, Stateright). The next layer out from the concurrency row. |
+| **Time / clock** | DST/leap/timezone/expiry/ordering bugs that ordinary tests run only at "now" | Time-dependent logic, scheduling, token/cache expiry. Inject a controllable `Clock` and warp it; also a flakiness fix. |
+| **ML/LLM behavioral eval** | Unsafe / biased / jailbreakable / low-robustness outputs a distribution check won't flag | ML models or LLM features. Adversarial robustness + fairness + (LLMs) eval sets / LLM-as-judge / red-team. Extends the statistical row; shares the security mindset. |
+| **Accessibility & localization** | a11y violations (contrast, roles, keyboard) + broken RTL/encoding/truncated translations | User-facing UI — pixel diffs structurally miss these. axe-core/pa11y; pseudolocalization + RTL snapshots. |
 
 **Security is an adjacent axis** — for anything exposed, multi-tenant, or handling untrusted input/secrets, add **developer-authored abuse-case / negative tests** (authz & tenant-isolation bypass, input-validation boundaries, business-logic bypass, secret non-leakage) *plus* out-of-band scanners (SAST/taint, DAST, dependency-SCA, secret scanning) and fuzzing-for-vulnerabilities; they catch exploitability, which correctness layers don't. (The abuse-case tests are mechanically negative example/property tests — a security *mindset* applied through existing lenses, not a separate one.)
 
