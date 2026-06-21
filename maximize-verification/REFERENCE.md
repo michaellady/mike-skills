@@ -107,3 +107,24 @@ A conformance harness *is* the **tap condition** — the loop's clean terminatio
 | **C/C++** | rapidcheck | ASan/UBSan/MSan/LSan, Valgrind | CBMC, KLEE | Frama-C |
 
 Cross-language differential/conformance and golden-artifact testing are framework-agnostic — capture the old implementation's outputs over a corpus, run the new implementation on the same inputs, and diff. Deterministic simulation testing (FoundationDB-style) is available via Antithesis (hosted), madsim (Rust), and turmoil (Rust networking). Shadow / production differential is likewise framework-agnostic — GitHub Scientist (Ruby + ports), Twitter Diffy (HTTP services), or a hand-rolled mirror that tees real traffic to old + new and diffs.
+
+---
+
+## Worked example: optimizing a Go hot path
+
+A concrete fill-in of the [SKILL.md output format](./SKILL.md#output-format) — every slot named, the tiered stack marked on/off/why.
+
+*An agent is optimizing a hot path in a Go service — `func Route(req Request) []Hop` — replacing an O(n²) scan with a precomputed index. The old implementation stays in the tree. This is the highest-value case: a free, perfect oracle exists.*
+
+1. **Diagnosis** — Change type: refactor/optimize with existing impl. Oracle: the old `Route` (kept). Authorship: the same agent writes the new impl *and* its tests → correlated-failure flag **set**. Nature: performance-critical, single-threaded, trusted input. Current verification: a handful of example tests.
+2. **Anchor oracle** — **Differential / conformance** over golden artifacts: capture `oldRoute`'s output across a request corpus, run `newRoute` on the same inputs, diff. The agent cannot "agree with itself" into a bug.
+3. **The stack** —
+   - *Tier 0 — Differential:* **ON** — `oldRoute` vs `newRoute` over the corpus + property-generated inputs. The spine.
+   - *Tier 1 — Static:* **ON** — `go vet` + golangci-lint as a `-Werror` gate. *Property-based:* **ON** — gopter/rapid: `newRoute(req)` ≡ `oldRoute(req)` for all generated `req` (differential-as-property). *Runtime contracts:* **ON** — `assert` output hops form a valid path.
+   - *Tier 2 — N-version:* **ON via differential** (old impl is the second version). *Cross-model review:* **ON** — agent authored code+tests (see step 7).
+   - *Tier 3 — Performance:* **ON** — `testing.B` benchmark; the perf delta is a pass/fail gate (a slower rewrite is a *failed* optimization). *Fuzzing:* **ON** — `go test -fuzz` over `Request`, differential oracle as the check. *Compatibility:* **ON** if `Request`/`Hop` cross a wire/persisted boundary; else off. **OFF (why):** concurrency (single-threaded), sanitizers (pure Go, no cgo/unsafe), statistical (deterministic output), visual/BDD/chaos/observability/shadow (not user-facing, not distributed), symbolic (differential+fuzz already cover the logic), stateful/metamorphic/combinatorial/contract (no state machine, no config matrix, no unowned boundary).
+4. **Correlated-failure breakers** — (1) the differential oracle the agent didn't produce — the whole game, and free here; (2) tests-as-spec, test files read-only to the implementer; (3) a held-out request corpus the agent never sees; (4) lean on the gopter property; (9) re-run the gate yourself — never trust the agent's "benchmarks pass" summary.
+5. **Tools** — gopter/rapid (property), `go test -fuzz` (fuzz), go-mutesting or gremlins (mutation), `testing.B` + benchstat (perf).
+6. **Meta-checks to report** — **mutation score** via go-mutesting on the new code, *not* line coverage; flakiness check via `go test -count=20 -shuffle=on`, **flake-budget = 0**.
+7. **Cross-model review** — authorship triggered it: `/converge audit` on the test suite + diff, `source_label = "ORIGINAL IMPLEMENTATION"`, `source_content = oldRoute`, `rules_list` = the test-suite rules in step 4. (Converge unavailable → one fresh-context different-model review, flagged as weaker.)
+8. **Loop framing** — Tap condition: *golden corpus matches **AND** benchmark improved*. Deadlock detector: 5 no-progress iterations → escalate. Harness guard: golden corpus + benchmark baseline read-only to the implementer. Runs under `/converge verify` (or a manual loop with those three guards if converge is unavailable).
