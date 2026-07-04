@@ -383,6 +383,18 @@ printf '%s' "$ASSEMBLED_PROMPT" | bin/converge audit
 - **Never surface FAIL drafts to the user** — they should see only PASS-grade artifacts.
 - **Loop protection:** `audit` is a single-call primitive with no memory. If the same FAIL signature recurs 3× across revise/re-audit cycles, stop and escalate to the human (likely the rule is wrong, not the draft).
 
+## Audit recipe: code diffs
+
+How to compose an `audit` over a branch diff so reviewers judge the logic, not the noise:
+
+- **(a) Implementation-only diff.** Exclude `*_test.go` and `testdata/` from the diff — but STATE their existence and line counts in the prompt ("tests exist: N files, ~M lines, excluded for size") so reviewers don't flag missing tests. Likewise exclude mechanical fan-out files (registrations, generated maps) and note them as "assume mechanical."
+- **(b) Keep the total prompt ≲55KB.** Reviewers degrade beyond that — findings get vaguer and citation quality drops. If the diff won't fit, split by package and run multiple audits rather than truncating blind.
+- **(c) The RULES block is the contract.** Compose it from the repo's architectural commitments + the plan's binding corrections + the known-trap list. Numbered, each one enforceable ("R4: no cross-tenant read without workspace scoping"), not aspirational ("code should be clean").
+- **(d) One draft = the whole diff**, with a stable `draft_id` (e.g. the branch name) so findings across re-audits refer to the same artifact.
+- **(e) Always read the stderr per-reviewer ground-truth line** (`reviewers: codex=responded(some_fail) …`). A false `all_pass` — merge mislabeling a valid verdict as `parse_error`, a reviewer silently skipped — can't hide there. Never arm a merge off the stdout summary alone.
+- **(f) Findings loop.** For each accepted finding: fix → re-verify with the real gate (`make verify`, not a spot-check) → `bin/converge ledger disposition <finding_id> fixed --commit <sha>`. For material fixes, run a **delta re-audit**: single strongest reviewer, prompt = the prior finding + the fix diff only, judging ONLY whether the fix addresses that finding — not a fresh full audit.
+- **(g) VERIFY THE PREMISE of an escalated finding against the code before accepting it.** Grep the claimed overlap/collision/missing-guard yourself. Reviewers are plausible-but-wrong often enough that refutation is step one — a confidently-cited finding whose premise doesn't grep out is a false positive; record it as such (`disposition <id> false_positive`) so ledger precision stays honest.
+
 ## Mode-specific guidance
 
 ### plan mode

@@ -51,6 +51,21 @@ Enabling an LLM seam, the codebase's reference model id was `claude-sonnet-4-202
 
 Result: the dead default got fixed in code in the same change, the deploy var was set to a *verified* id, and a production "why is enrichment silently empty" debugging session never happened. The cost was four CLI calls.
 
+## Logs as the read-only database
+
+When a design decision needs production data but the DB sits in a private VPC with no read-only path, the service's **own logs are queryable**: CloudWatch Logs Insights `start-query` with `parse`/`stats` over the ingest/serve log lines answers volume, churn, and shape questions — e.g. rows-per-day by parsing the per-pass counters the service already emits — without any write, tunnel, or new access grant. Prefer this over installing tunnels mid-probe (a `session-manager-plugin` install *is* a write, and the probe is supposed to be read-only). If the log line doesn't carry the counter you need, that's a finding too: the observability gap goes in the plan.
+
+```bash
+QID=$(aws logs start-query --log-group-name /ecs/<service> \
+  --start-time $(date -v-14d +%s) --end-time $(date +%s) \
+  --query-string 'fields @timestamp, @message
+    | filter @message like /ingest pass complete/
+    | parse @message "rows=* connector=*" as rows, connector
+    | stats sum(rows) as rows_per_day by bin(1d) as day, connector
+    | sort day desc' --output text --query queryId)
+aws logs get-query-results --query-id "$QID"   # poll until status=Complete
+```
+
 ## Relationship to other skills
 
 - **maximize-verification** — same "oracle you didn't author" principle; this is its config/infra projection.
