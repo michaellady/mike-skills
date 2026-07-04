@@ -7,3 +7,6 @@ uninstall-logs/
 
 # macOS metadata
 .DS_Store
+
+# converge runtime cache (per-machine)
+converge/cache/
