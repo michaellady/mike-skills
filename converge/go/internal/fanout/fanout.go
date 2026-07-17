@@ -211,14 +211,18 @@ var registeredReviewers = []reviewerSpec{
 	// different ways than the frontier labs' — cheap extra diversity for the audit panel.
 	{name: "kimi", cli: "agent", model: "kimi-k2.7-code", make: func() provider.Provider { return agent.New() }},
 	{name: "glm", cli: "agent", model: "glm-5.2-max", make: func() provider.Provider { return agent.New() }},
+	// The third open-weights family: OpenAI's GPT-OSS 120B, served through the agy CLI
+	// (its only effort tier is Medium). Runs on agy like the gemini pin — the thread
+	// temp-file keys on the reviewer name, so concurrent agy-CLI reviewers don't collide.
+	{name: "gpt-oss", cli: "agy", model: "gpt-oss-120b-medium", make: func() provider.Provider { return agy.New() }},
 }
 
 // defaultReviewers is the comma-separated default for --reviewers.
 //
-// Default = claude + codex + agy + composer-2.5 + grok-build + kimi + glm:
-// independent agent families catch different failure modes, and the two
-// open-weights families (Kimi, GLM) fail differently again from the frontier
-// labs. composer-2.5, grok-build, kimi, and glm run via
+// Default = claude + codex + agy + composer-2.5 + grok-build + kimi + glm +
+// gpt-oss: independent agent families catch different failure modes, and the
+// three open-weights families (Kimi, GLM, GPT-OSS) fail differently again
+// from the frontier labs. composer-2.5, grok-build, kimi, and glm run via
 // the Cursor `agent` CLI and need a paid Cursor plan — on a free/low-tier plan
 // they quota-fail and land under `skipped`, so including them by default is
 // safe (they simply don't contribute when unavailable). The bare `agent`
@@ -227,7 +231,7 @@ var registeredReviewers = []reviewerSpec{
 // Per-reviewer failures degrade gracefully: a reviewer that quota-fails,
 // auth-fails, or times out is reported under `skipped` (see unavailableReason),
 // NOT `parse_error` — so the remaining reviewers still produce a merged verdict.
-const defaultReviewers = "claude,codex,agy,composer-2.5,grok-build,kimi,glm"
+const defaultReviewers = "claude,codex,agy,composer-2.5,grok-build,kimi,glm,gpt-oss"
 
 // Run executes one audit fan-out. args are the `converge audit` subcommand
 // args (flags only). Returns the desired process exit code.
