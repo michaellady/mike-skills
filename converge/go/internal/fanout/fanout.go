@@ -624,15 +624,83 @@ func unavailableReason(err error) (string, bool) {
 // tolerating markdown fences and surrounding prose.
 func parseResponse(s string) (*reviewerResp, error) {
 	s = strings.TrimSpace(s)
-	if strings.HasPrefix(s, "```") {
-		if i := strings.Index(s, "\n"); i >= 0 {
-			s = s[i+1:]
+	// Reviewers wrap the verdict three ways (the llm-output-untrusted-format lesson — decode
+	// defensively at every site):
+	//   1. The bare contract, possibly whole-body fenced (the original happy path).
+	//   2. A long NARRATIVE report with the verdict in a fenced ```json block near the END —
+	//      agy/claude did this on all of 2026-07-17's audits, and the old first-{-to-last-}
+	//      span swallowed prose braces from the narrative and mislabeled real PASSes as
+	//      parse_error. Fenced blocks are tried LAST-first (the verdict concludes the report).
+	//   3. Un-fenced trailing JSON in a narrative — a bounded decoder walk from the end.
+	for _, cand := range responseCandidates(s) {
+		if r, err := parseCandidate(cand); err == nil {
+			return r, nil
 		}
-		if j := strings.LastIndex(s, "```"); j >= 0 {
-			s = s[:j]
-		}
-		s = strings.TrimSpace(s)
 	}
+	return nil, fmt.Errorf("no candidate parsed as a verdict (whole body, %d fenced block(s), decoder walk) — off-schema reviewer output?", len(fencedBlocks(s)))
+}
+
+// responseCandidates yields candidate JSON texts in trust order: the whole (fence-stripped)
+// body, each fenced code block from last to first, then trailing decoder-walk objects.
+func responseCandidates(s string) []string {
+	var out []string
+	body := s
+	if strings.HasPrefix(body, "```") {
+		if i := strings.Index(body, "\n"); i >= 0 {
+			body = body[i+1:]
+		}
+		if j := strings.LastIndex(body, "```"); j >= 0 {
+			body = body[:j]
+		}
+		body = strings.TrimSpace(body)
+	}
+	out = append(out, body)
+	blocks := fencedBlocks(s)
+	for i := len(blocks) - 1; i >= 0; i-- {
+		out = append(out, blocks[i])
+	}
+	// Decoder walk: try to decode one JSON value at each of the last few '{' positions —
+	// catches an un-fenced trailing verdict without ever mixing prose into the span. Bounded
+	// so a huge transcript can't make this quadratic.
+	idx := strings.LastIndex(s, "{")
+	for tries := 0; idx >= 0 && tries < 50; tries++ {
+		var raw json.RawMessage
+		if json.NewDecoder(strings.NewReader(s[idx:])).Decode(&raw) == nil {
+			out = append(out, string(raw))
+		}
+		idx = strings.LastIndex(s[:idx], "{")
+	}
+	return out
+}
+
+// fencedBlocks returns the contents of every ``` fenced block in order.
+func fencedBlocks(s string) []string {
+	var blocks []string
+	for {
+		open := strings.Index(s, "```")
+		if open < 0 {
+			return blocks
+		}
+		rest := s[open+3:]
+		nl := strings.Index(rest, "\n")
+		if nl < 0 {
+			return blocks
+		}
+		rest = rest[nl+1:] // drop the info string ("json", "diff", …)
+		fin := strings.Index(rest, "```")
+		if fin < 0 {
+			return blocks
+		}
+		if b := strings.TrimSpace(rest[:fin]); b != "" {
+			blocks = append(blocks, b)
+		}
+		s = rest[fin+3:]
+	}
+}
+
+// parseCandidate applies the contract parse (wrapped shape, else the flat single-verdict
+// adaption) to one candidate text, using the outermost {…} span of that candidate only.
+func parseCandidate(s string) (*reviewerResp, error) {
 	start := strings.Index(s, "{")
 	end := strings.LastIndex(s, "}")
 	if start < 0 || end < 0 || end < start {

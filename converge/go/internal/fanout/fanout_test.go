@@ -498,3 +498,51 @@ func TestIssueOverlaps(t *testing.T) {
 		}
 	}
 }
+
+// The 2026-07-17 mislabels: agy/claude returned long NARRATIVES with the verdict in a fenced
+// ```json block near the end; the old first-{-to-last-} span swallowed prose braces and
+// bucketed real PASSes as parse_error. These pin the candidate-based parse.
+func TestParseResponse_narrativeWithTrailingFencedVerdict(t *testing.T) {
+	body := "I traced each concern to ground truth.\n\n" +
+		"| Concern | Finding |\n|---|---|\n| tenant | `{ws.ID}` scoping clean |\n\n" +
+		"The guard `if cause instanceof ApiError && cause.status === 404 { return null }` holds.\n\n" +
+		"```json\n{\n  \"verdict\": \"pass\",\n  \"summary\": \"clean\",\n  \"findings\": [\n    {\"severity\": \"low\", \"file\": \"a.go\", \"description\": \"nit\"}\n  ]\n}\n```\n"
+	r, err := parseResponse(body)
+	if err != nil {
+		t.Fatalf("narrative+fenced verdict must parse, got: %v", err)
+	}
+	if len(r.Verdicts) != 1 || r.Verdicts[0].Verdict != "PASS" {
+		t.Fatalf("want one PASS verdict, got %+v", r.Verdicts)
+	}
+}
+
+func TestParseResponse_narrativeWithMultipleFencedBlocks(t *testing.T) {
+	// An earlier diff/code fence must not shadow the LAST (verdict) fence.
+	body := "Applied the patch:\n```diff\n+ if x { y() }\n```\nRan the suite — green.\n" +
+		"```json\n{\"verdict\":\"fail\",\"findings\":[\"real defect: {broken} handling\"]}\n```\nDone."
+	r, err := parseResponse(body)
+	if err != nil {
+		t.Fatalf("multi-fence narrative must parse, got: %v", err)
+	}
+	if len(r.Verdicts) != 1 || r.Verdicts[0].Verdict != "FAIL" {
+		t.Fatalf("want one FAIL verdict, got %+v", r.Verdicts)
+	}
+}
+
+func TestParseResponse_unfencedTrailingJSON(t *testing.T) {
+	body := "Summary of the review (no fence, prose braces like {this} earlier).\n\n" +
+		`{"verdict":"pass","findings":[]}`
+	r, err := parseResponse(body)
+	if err != nil {
+		t.Fatalf("unfenced trailing JSON must parse via the decoder walk, got: %v", err)
+	}
+	if len(r.Verdicts) != 1 || r.Verdicts[0].Verdict != "PASS" {
+		t.Fatalf("want one PASS verdict, got %+v", r.Verdicts)
+	}
+}
+
+func TestParseResponse_pureProseStillFailsLoud(t *testing.T) {
+	if _, err := parseResponse("I could not complete the review at all."); err == nil {
+		t.Fatal("prose with no verdict must stay a loud parse error (the false-green guard)")
+	}
+}
