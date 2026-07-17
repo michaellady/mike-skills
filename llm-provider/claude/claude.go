@@ -76,7 +76,9 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 		model = os.Getenv("CONVERGE_CLAUDE_MODEL")
 	}
 	if model == "" {
-		model = "opus"
+		// Fable 5 (Mythos-class) sits above Opus — audits want the strongest reviewer
+		// available. Overridable via opts.Model / $CONVERGE_CLAUDE_MODEL.
+		model = "fable"
 	}
 	effort := opts.Effort
 	if effort == "" {

@@ -290,9 +290,9 @@ func TestSelectReviewers_Default(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Default = claude + codex + agy + composer-2.5 + grok-build; the bare
-	// `agent` provider stays opt-in.
-	want := []string{"claude", "codex", "agy", "composer-2.5", "grok-build"}
+	// Default = the five frontier-family reviewers + the two open-weights
+	// families (kimi, glm); the bare `agent` provider stays opt-in.
+	want := []string{"claude", "codex", "agy", "composer-2.5", "grok-build", "kimi", "glm"}
 	if len(got) != len(want) {
 		t.Fatalf("default should be %v, got %d items", want, len(got))
 	}
@@ -314,7 +314,7 @@ func TestSelectReviewers_CursorModels(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Both route through the Cursor `agent` CLI, pinned to distinct models.
-	want := map[string]string{"composer-2.5": "composer-2.5", "grok-build": "grok-build-0.1"}
+	want := map[string]string{"composer-2.5": "composer-2.5", "grok-build": "cursor-grok-4.5-high"}
 	if len(got) != len(want) {
 		t.Fatalf("want %d reviewers, got %d", len(want), len(got))
 	}

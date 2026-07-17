@@ -76,6 +76,15 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 	// the response to stdout; --dangerously-skip-permissions avoids interactive
 	// tool-permission prompts that would otherwise block headless use.
 	args := []string{"--print", string(prompt), "--dangerously-skip-permissions"}
+	// Model selection: explicit opts.Model > $CONVERGE_AGY_MODEL > agy's own session
+	// default. The id form (e.g. "gemini-3.1-pro-high") is stable; `agy models` lists them.
+	model := opts.Model
+	if model == "" {
+		model = os.Getenv("CONVERGE_AGY_MODEL")
+	}
+	if model != "" {
+		args = append(args, "--model", model)
+	}
 
 	cctx, cancel := context.WithTimeout(ctx, opts.Timeout)
 	defer cancel()

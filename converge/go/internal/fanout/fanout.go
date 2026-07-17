@@ -198,14 +198,27 @@ var registeredReviewers = []reviewerSpec{
 	// (PATH check), and runProvider keys its thread temp-file on `name` (not
 	// p.Name(), which is "agent" for all three) so concurrent runs don't collide.
 	{name: "composer-2.5", cli: "agent", model: "composer-2.5", make: func() provider.Provider { return agent.New() }},
-	{name: "grok-build", cli: "agent", model: "grok-build-0.1", make: func() provider.Provider { return agent.New() }},
-	{name: "agy", cli: "agy", make: func() provider.Provider { return agy.New() }},
+	// grok-build-0.1 vanished from Cursor's roster (the 2026-07 dead-pin outage); the grok
+	// family now ships as cursor-grok-4.5-* — pin the highest-effort variant. The reviewer
+	// KEEPS the name "grok-build" so ledger history and the standing all-five rule read
+	// continuously.
+	{name: "grok-build", cli: "agent", model: "cursor-grok-4.5-high", make: func() provider.Provider { return agent.New() }},
+	// agy previously ran Antigravity's session default; pin the strongest Gemini it offers
+	// (`agy models`) so the fifth family reviews at full strength too.
+	{name: "agy", cli: "agy", model: "gemini-3.1-pro-high", make: func() provider.Provider { return agy.New() }},
+	// The top OPEN-WEIGHTS families on Cursor's roster (2026-07): Moonshot's Kimi and
+	// Zhipu's GLM, each pinned to its strongest listed variant. Open models fail in
+	// different ways than the frontier labs' — cheap extra diversity for the audit panel.
+	{name: "kimi", cli: "agent", model: "kimi-k2.7-code", make: func() provider.Provider { return agent.New() }},
+	{name: "glm", cli: "agent", model: "glm-5.2-max", make: func() provider.Provider { return agent.New() }},
 }
 
 // defaultReviewers is the comma-separated default for --reviewers.
 //
-// Default = claude + codex + agy + composer-2.5 + grok-build: independent agent
-// families catch different failure modes. composer-2.5 and grok-build run via
+// Default = claude + codex + agy + composer-2.5 + grok-build + kimi + glm:
+// independent agent families catch different failure modes, and the two
+// open-weights families (Kimi, GLM) fail differently again from the frontier
+// labs. composer-2.5, grok-build, kimi, and glm run via
 // the Cursor `agent` CLI and need a paid Cursor plan — on a free/low-tier plan
 // they quota-fail and land under `skipped`, so including them by default is
 // safe (they simply don't contribute when unavailable). The bare `agent`
@@ -214,7 +227,7 @@ var registeredReviewers = []reviewerSpec{
 // Per-reviewer failures degrade gracefully: a reviewer that quota-fails,
 // auth-fails, or times out is reported under `skipped` (see unavailableReason),
 // NOT `parse_error` — so the remaining reviewers still produce a merged verdict.
-const defaultReviewers = "claude,codex,agy,composer-2.5,grok-build"
+const defaultReviewers = "claude,codex,agy,composer-2.5,grok-build,kimi,glm"
 
 // Run executes one audit fan-out. args are the `converge audit` subcommand
 // args (flags only). Returns the desired process exit code.
