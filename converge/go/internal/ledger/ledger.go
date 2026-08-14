@@ -97,7 +97,14 @@ func ArtifactDir(auditID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(filepath.Dir(p), "audits", auditID), nil
+	// Absolute so the path stays meaningful when echoed in skip reasons and
+	// stderr notes (a relative $CONVERGE_LEDGER would otherwise print a path
+	// only valid from the audit's cwd).
+	dir, err := filepath.Abs(filepath.Join(filepath.Dir(p), "audits", auditID))
+	if err != nil {
+		return "", err
+	}
+	return dir, nil
 }
 
 // dbPath resolves the ledger DB path: $CONVERGE_LEDGER if set, else
