@@ -254,7 +254,7 @@ func Run(args []string) int {
 	fs.IntVar(&timeoutSec, "timeout", 600, "per-reviewer timeout in seconds, measured from when the reviewer starts")
 	fs.BoolVar(&quiet, "quiet", false, "suppress provider heartbeat lines on stderr")
 	fs.StringVar(&reviewersCSV, "reviewers", defaultReviewers,
-		"comma-separated reviewers to dispatch (registered: claude,codex,agent,composer-2.5,grok-build,agy)")
+		"comma-separated reviewers to dispatch (registered: claude,codex,agent,composer-2.5,grok-build,agy,kimi,glm,gpt-oss)")
 	fs.BoolVar(&noLedger, "no-ledger", false, "do not record this audit to the SQLite ledger")
 	fs.StringVar(&label, "label", "", "label for the ledger audit row (defaults to the first draft id)")
 	fs.StringVar(&ledgerPath, "ledger", "", "ledger DB path (overrides CONVERGE_LEDGER for this run)")

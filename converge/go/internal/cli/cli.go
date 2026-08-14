@@ -125,11 +125,14 @@ LLM transport (codex, claude, agent, or agy)
                                          Alias for llm-critique --provider claude.
 
 Adversarial audit (fresh-eyes fan-out — the folded adversarial-review)
-  audit [--reviewers claude,codex,agy,composer-2.5,grok-build] [--prompt-file <p>] [--timeout <s>]
-        [--quiet]                        Fan the SAME composed prompt out to all
+  audit [--reviewers <csv>] [--prompt-file <p>] [--timeout <s>] [--quiet]
+                                         Fan the SAME composed prompt out to all
                                          reviewers in parallel, FAIL-OR merge,
                                          emit canonical {summary,verdicts,...}
                                          JSON. Prompt from --prompt-file or stdin.
+                                         Default reviewers: claude,codex,agy,
+                                         composer-2.5,grok-build,kimi,glm,gpt-oss
+                                         (bare "agent" is opt-in).
 
 Ledger (SQLite audit history for model comparison)
   ledger stats                           Per-model table: audits participated,
