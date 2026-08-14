@@ -1,6 +1,7 @@
 package fanout
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -459,6 +460,70 @@ func TestUnavailableReason(t *testing.T) {
 type errString string
 
 func (e errString) Error() string { return string(e) }
+
+// TestClassifyResult pins the salvage path: a reviewer that ran past its
+// timeout but still delivered a parseable verdict (the codex case — its
+// worker outlives the CLI kill and completes late) joins the merge instead
+// of being discarded, while an unparseable or absent output stays a skip
+// whose reason distinguishes no-output from persisted-but-unparsed.
+func TestClassifyResult(t *testing.T) {
+	valid := `{"summary":"some_fail","verdicts":[{"draft_id":"d","verdict":"FAIL","issues":["x"]}]}`
+	timeoutErr := errString("codex timed out after 7m0s (completed late; captured message delivered on stdout)")
+	cases := []struct {
+		name       string
+		raw        string
+		err        error
+		rawPath    string
+		wantParsed bool
+		wantSalv   bool
+		wantSkip   string
+		wantPErr   bool
+	}{
+		{"clean response", valid, nil, "/p/codex.txt", true, false, "", false},
+		{"clean garbage", "not json at all whatsoever", nil, "/p/x.txt", false, false, "", true},
+		{"timeout with late complete verdict", valid, timeoutErr, "/p/codex.txt", true, true, "", false},
+		{"timeout with unparsed output", "partial narra", timeoutErr, "/p/claude.txt", false, false, "timed out (unparsed output at /p/claude.txt)", false},
+		{"timeout with unparsed output, persist failed", "partial narra", timeoutErr, "", false, false, "timed out (unparsed output)", false},
+		{"timeout no output", "", timeoutErr, "", false, false, "timed out (no output)", false},
+		{"quota", "", errString("429 Too Many Requests"), "", false, false, "usage/quota limit", false},
+		{"genuine failure", "", errString("unexpected end of JSON input"), "", false, false, "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := classifyResult(tc.raw, tc.err, tc.rawPath)
+			if (c.parsed != nil) != tc.wantParsed {
+				t.Errorf("parsed = %v, want %v", c.parsed != nil, tc.wantParsed)
+			}
+			if c.salvaged != tc.wantSalv {
+				t.Errorf("salvaged = %v, want %v", c.salvaged, tc.wantSalv)
+			}
+			if c.skipReason != tc.wantSkip {
+				t.Errorf("skipReason = %q, want %q", c.skipReason, tc.wantSkip)
+			}
+			if c.parseError != tc.wantPErr {
+				t.Errorf("parseError = %v, want %v", c.parseError, tc.wantPErr)
+			}
+		})
+	}
+}
+
+func TestPersistRaw(t *testing.T) {
+	dir := t.TempDir() + "/audits/abc123"
+	p := persistRaw(dir, "codex", "the raw verdict")
+	if p == "" {
+		t.Fatal("persistRaw should return the written path")
+	}
+	b, err := os.ReadFile(p)
+	if err != nil || string(b) != "the raw verdict" {
+		t.Fatalf("read back %q, err %v", b, err)
+	}
+	if got := persistRaw(dir, "claude", ""); got != "" {
+		t.Errorf("empty raw should not write, got %q", got)
+	}
+	if got := persistRaw("", "claude", "x"); got != "" {
+		t.Errorf("empty dir should not write, got %q", got)
+	}
+}
 
 func TestParseIssue(t *testing.T) {
 	cases := []struct {

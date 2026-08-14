@@ -124,7 +124,13 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 	agentMu.Unlock()
 
 	if cctx.Err() == context.DeadlineExceeded {
-		return provider.NewError(provider.ExitTimeout, "agent timed out after %s", opts.Timeout)
+		// Deliver whatever output was captured before the kill so the caller
+		// can salvage or persist it; the exit code still reports the deadline.
+		if partial := strings.TrimSpace(outBuf.String()); partial != "" {
+			_, _ = io.WriteString(opts.Stdout, partial)
+			return provider.NewError(provider.ExitTimeout, "agent timed out after %s (partial output delivered on stdout)", opts.Timeout)
+		}
+		return provider.NewError(provider.ExitTimeout, "agent timed out after %s (no output)", opts.Timeout)
 	}
 	if isAuthError(errBuf.String()) {
 		return provider.NewError(provider.ExitAuthError, "agent auth error — run `agent login`")

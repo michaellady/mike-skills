@@ -130,7 +130,21 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 	waitErr := cmd.Wait()
 
 	if errors.Is(cctx.Err(), context.DeadlineExceeded) {
-		return provider.NewError(provider.ExitTimeout, "codex timed out after %s", opts.Timeout)
+		// The deadline kill doesn't always end the stream: codex's worker can
+		// outlive the CLI process (it holds the stdout pipe) and complete the
+		// turn late — a full verdict has been captured by the time we get
+		// here. Deliver whatever landed instead of discarding it, so the
+		// caller can salvage a late-but-complete message; the exit code still
+		// reports the deadline.
+		if final != "" {
+			_, _ = io.WriteString(opts.Stdout, final)
+			if opts.ResumeID == "" && threadID != "" {
+				_ = os.MkdirAll(filepath.Dir(opts.ThreadOut), 0o755)
+				_ = os.WriteFile(opts.ThreadOut, []byte(threadID), 0o644)
+			}
+			return provider.NewError(provider.ExitTimeout, "codex timed out after %s (completed late; captured message delivered on stdout)", opts.Timeout)
+		}
+		return provider.NewError(provider.ExitTimeout, "codex timed out after %s (no output)", opts.Timeout)
 	}
 	if isAuthError(errBuf.String()) {
 		return provider.NewError(provider.ExitAuthError, "codex auth error — run `codex login`")

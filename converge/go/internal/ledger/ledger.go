@@ -87,6 +87,19 @@ func FindingID(loc, title string) string {
 	return hex.EncodeToString(sum[:])[:16]
 }
 
+// ArtifactDir returns the per-run directory for raw reviewer outputs,
+// alongside the ledger DB: <ledger-dir>/audits/<audit_id>. Heartbeat lines
+// truncate at ~80 chars, so without these files a late or malformed verdict
+// is irrecoverable. The caller creates the dir on first write; nothing about
+// it is recorded in the DB itself.
+func ArtifactDir(auditID string) (string, error) {
+	p, err := dbPath()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(filepath.Dir(p), "audits", auditID), nil
+}
+
 // dbPath resolves the ledger DB path: $CONVERGE_LEDGER if set, else
 // $HOME/.converge/ledger.db.
 func dbPath() (string, error) {

@@ -282,6 +282,15 @@ func Run(args []string) int {
 		Skipped:   map[string]string{},
 	}
 
+	// The audit id is generated up front (not inside recordLedger) so the raw
+	// per-reviewer output artifacts land in a directory named after the same
+	// id the ledger row carries.
+	auditID := ledger.NewAuditID()
+	artifactDir, adErr := ledger.ArtifactDir(auditID)
+	if adErr != nil {
+		artifactDir = "" // persistence disabled; the audit itself proceeds
+	}
+
 	type result struct {
 		name      string
 		out       string
@@ -310,33 +319,41 @@ func Run(args []string) int {
 
 	latencyByName := map[string]int64{}
 	parsed := map[string]*reviewerResp{}
+	wroteArtifacts := false
 	for res := range resultsCh {
 		latencyByName[res.name] = res.latencyMs
-		if res.err != nil {
-			// A reviewer dispatched but unable to produce a verdict for reasons
-			// outside the audit (quota, auth, timeout) is "skipped", not a
-			// malformed-output parse_error. Keeps the merged result honest.
-			if reason, ok := unavailableReason(res.err); ok {
-				out.Skipped[res.name] = reason
-			} else {
-				out.ParseError = append(out.ParseError, res.name)
+		raw := strings.TrimSpace(res.out)
+		rawPath := persistRaw(artifactDir, res.name, raw)
+		if rawPath != "" {
+			wroteArtifacts = true
+		}
+		c := classifyResult(raw, res.err, rawPath)
+		switch {
+		case c.parsed != nil:
+			parsed[res.name] = c.parsed
+			if c.salvaged && !quiet {
+				fmt.Fprintf(os.Stderr, "audit: [%s] completed after its timeout — verdict salvaged into the merge\n", res.name)
 			}
+		case c.skipReason != "":
+			out.Skipped[res.name] = c.skipReason
 			out.RawResponse += fmt.Sprintf("[%s error] %v\n", res.name, res.err)
-			continue
-		}
-		r, perr := parseResponse(res.out)
-		if perr != nil {
+		default: // parse error
 			out.ParseError = append(out.ParseError, res.name)
-			out.RawResponse += fmt.Sprintf("[%s raw]\n%s\n", res.name, res.out)
-			continue
+			if res.err != nil {
+				out.RawResponse += fmt.Sprintf("[%s error] %v\n", res.name, res.err)
+			} else {
+				out.RawResponse += fmt.Sprintf("[%s raw]\n%s\n", res.name, res.out)
+			}
 		}
-		parsed[res.name] = r
+	}
+	if wroteArtifacts && !quiet {
+		fmt.Fprintf(os.Stderr, "audit: raw reviewer outputs: %s\n", artifactDir)
 	}
 
 	if len(parsed) == 0 {
 		out.Summary = "parse_error"
 		out.Error = "no reviewers returned a usable verdict (all skipped, errored, or malformed JSON)"
-		recordLedger(out, parsed, selected, promptPath, label, noLedger, latencyByName, time.Since(start).Milliseconds())
+		recordLedger(auditID, out, parsed, selected, promptPath, label, noLedger, latencyByName, time.Since(start).Milliseconds())
 		printReviewerLine(out, parsed, selected, quiet)
 		emit(out)
 		return 2
@@ -354,10 +371,79 @@ func Run(args []string) int {
 	if len(out.Skipped) == 0 {
 		out.Skipped = nil
 	}
-	recordLedger(out, parsed, selected, promptPath, label, noLedger, latencyByName, time.Since(start).Milliseconds())
+	recordLedger(auditID, out, parsed, selected, promptPath, label, noLedger, latencyByName, time.Since(start).Milliseconds())
 	printReviewerLine(out, parsed, selected, quiet)
 	emit(out)
 	return 0
+}
+
+// classification is what one reviewer's run contributes to the merge:
+// exactly one of parsed (responded — possibly salvaged), skipReason
+// (skipped), or parseError is set.
+type classification struct {
+	parsed     *reviewerResp
+	skipReason string
+	parseError bool
+	salvaged   bool
+}
+
+// classifyResult decides a reviewer's fate from its raw output + run error.
+// The timeout branch is the salvage path: a reviewer can complete AFTER its
+// deadline but before the merge finalizes (the fan-out waits for every
+// provider to return, and e.g. codex's worker can outlive the CLI kill and
+// finish the turn late — providers deliver whatever they captured on stdout
+// alongside the timeout error). If that late output parses as a verdict it
+// joins the merge instead of being discarded; if it doesn't parse, the skip
+// reason points at the persisted raw file so the verdict stays manually
+// recoverable.
+func classifyResult(raw string, runErr error, rawPath string) classification {
+	if runErr == nil {
+		r, perr := parseResponse(raw)
+		if perr != nil {
+			return classification{parseError: true}
+		}
+		return classification{parsed: r}
+	}
+	// A reviewer dispatched but unable to produce a verdict for reasons
+	// outside the audit (quota, auth, timeout) is "skipped", not a
+	// malformed-output parse_error. Keeps the merged result honest.
+	reason, unavailable := unavailableReason(runErr)
+	if !unavailable {
+		return classification{parseError: true}
+	}
+	if reason == "timed out" {
+		switch {
+		case raw == "":
+			return classification{skipReason: "timed out (no output)"}
+		default:
+			if r, perr := parseResponse(raw); perr == nil {
+				return classification{parsed: r, salvaged: true}
+			}
+			if rawPath != "" {
+				return classification{skipReason: fmt.Sprintf("timed out (unparsed output at %s)", rawPath)}
+			}
+			return classification{skipReason: "timed out (unparsed output)"}
+		}
+	}
+	return classification{skipReason: reason}
+}
+
+// persistRaw writes one reviewer's raw final output to <dir>/<reviewer>.txt,
+// creating dir on first use. Best-effort: returns the file path, or "" when
+// there was nothing to write or the write failed (the audit never fails over
+// artifact persistence).
+func persistRaw(dir, reviewer, raw string) string {
+	if dir == "" || raw == "" {
+		return ""
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return ""
+	}
+	path := filepath.Join(dir, reviewer+".txt")
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		return ""
+	}
+	return path
 }
 
 // issueRe parses a merged issue string of the form
@@ -373,13 +459,13 @@ var locRe = regexp.MustCompile(`\(([^()]*:\d+)\)\s*$`)
 // best-effort: any error is logged to stderr and otherwise ignored so the
 // audit's own exit code and stdout JSON are never affected. Skipped entirely
 // when noLedger is set.
-func recordLedger(out mergedResp, parsed map[string]*reviewerResp, selected []reviewerSpec, promptPath, label string, noLedger bool, latency map[string]int64, durationMs int64) {
+func recordLedger(auditID string, out mergedResp, parsed map[string]*reviewerResp, selected []reviewerSpec, promptPath, label string, noLedger bool, latency map[string]int64, durationMs int64) {
 	if noLedger {
 		return
 	}
 
 	rec := ledger.AuditRecord{
-		AuditID:            ledger.NewAuditID(),
+		AuditID:            auditID,
 		TS:                 time.Now().UTC().Format(time.RFC3339),
 		Label:              label,
 		Summary:            out.Summary,

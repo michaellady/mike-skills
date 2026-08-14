@@ -103,7 +103,13 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 	runErr := cmd.Run()
 
 	if cctx.Err() == context.DeadlineExceeded {
-		return provider.NewError(provider.ExitTimeout, "agy timed out after %s", opts.Timeout)
+		// Deliver whatever output was captured before the kill so the caller
+		// can salvage or persist it; the exit code still reports the deadline.
+		if partial := strings.TrimSpace(outBuf.String()); partial != "" {
+			_, _ = io.WriteString(opts.Stdout, partial)
+			return provider.NewError(provider.ExitTimeout, "agy timed out after %s (partial output delivered on stdout)", opts.Timeout)
+		}
+		return provider.NewError(provider.ExitTimeout, "agy timed out after %s (no output)", opts.Timeout)
 	}
 	if isAuthError(errBuf.String()) {
 		return provider.NewError(provider.ExitAuthError, "agy auth error — run `agy` once interactively to authenticate")
