@@ -262,6 +262,57 @@ func TestMerge_OnlyClaude(t *testing.T) {
 	}
 }
 
+// TestStripReviewerTags pins the attribution-artifact fix: a reviewer that
+// echoes a "[claude]"-style tag from prompt context must have it stripped
+// before clustering, while severity tags and non-reviewer brackets survive.
+func TestStripReviewerTags(t *testing.T) {
+	known := knownReviewerNames()
+	cases := map[string]string{
+		"[claude] R6 Lambda applies immutable Cache-Control": "R6 Lambda applies immutable Cache-Control",
+		"[kimi+glm] duplicated finding":                      "duplicated finding",
+		"[claude] [codex] stacked tags":                      "stacked tags",
+		"[high] a.go:1 — severity tag preserved":             "[high] a.go:1 — severity tag preserved",
+		"[CRITICAL] not a reviewer name":                     "[CRITICAL] not a reviewer name",
+		"no tag at all":                                      "no tag at all",
+		"[claude+unknown-model] mixed bracket kept":          "[claude+unknown-model] mixed bracket kept",
+		"[claude]":                                           "",
+		"[unclosed bracket":                                  "[unclosed bracket",
+	}
+	for in, want := range cases {
+		if got := stripReviewerTags(in, known); got != want {
+			t.Errorf("stripReviewerTags(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestMerge_EchoedTagStripped reproduces the observed artifact: one reviewer's
+// issue text began with its own "[claude]" bracket tag (echoed from prompt
+// context; claude itself was skipped that run), producing a nested
+// "[kimi+glm] [claude] ..." merged issue. The echoed tag must be stripped so
+// the cluster prefix is the only attribution — and so the two reviewers'
+// otherwise-identical issue texts cluster into ONE issue.
+func TestMerge_EchoedTagStripped(t *testing.T) {
+	parsed := map[string]*reviewerResp{
+		"kimi": {Verdicts: []verdict{
+			{DraftID: "a", Verdict: "FAIL", Issues: []string{"[claude] R6 Lambda applies immutable Cache-Control to mutable objects"}},
+		}},
+		"glm": {Verdicts: []verdict{
+			{DraftID: "a", Verdict: "FAIL", Issues: []string{"R6 Lambda applies immutable Cache-Control to mutable objects"}},
+		}},
+	}
+	got := merge(parsed, selectedFor("kimi", "glm"))
+	if len(got.Verdicts[0].Issues) != 1 {
+		t.Fatalf("want 1 clustered issue, got %d: %v", len(got.Verdicts[0].Issues), got.Verdicts[0].Issues)
+	}
+	issue := got.Verdicts[0].Issues[0]
+	if !strings.HasPrefix(issue, "[kimi+glm] R6 Lambda") {
+		t.Fatalf("want [kimi+glm] prefix directly on the issue text, got %q", issue)
+	}
+	if strings.Contains(issue, "[claude]") {
+		t.Fatalf("echoed [claude] tag must be stripped, got %q", issue)
+	}
+}
+
 func TestMerge_ThreeWayCluster(t *testing.T) {
 	// All three flag the same problem (overlapping wording) → single
 	// "[claude+codex+agy]" attribution.

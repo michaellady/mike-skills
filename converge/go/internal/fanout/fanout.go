@@ -862,6 +862,44 @@ func merge(parsed map[string]*reviewerResp, selected []reviewerSpec) mergedResp 
 	return out
 }
 
+// knownReviewerNames is the set of registered reviewer names, used to
+// recognize (and strip) echoed attribution tags in reviewer issue text.
+func knownReviewerNames() map[string]bool {
+	m := make(map[string]bool, len(registeredReviewers))
+	for _, r := range registeredReviewers {
+		m[r.name] = true
+	}
+	return m
+}
+
+// stripReviewerTags removes leading "[name]" / "[a+b+...]" attribution tags
+// from an issue string when every name inside the bracket is a registered
+// reviewer. Reviewers sometimes echo an attribution prefix verbatim from
+// prompt context (e.g. a prior audit's merged findings quoted in the RULES or
+// source), which would nest a stale tag — possibly naming a reviewer that
+// didn't even respond — inside the merge's own "[r1+r2]" cluster prefix. The
+// cluster prefix must be the only attribution. Severity tags ("[high]",
+// "[CRITICAL]") are not reviewer names and are preserved. Loops so stacked
+// tags ("[claude] [codex] x") are fully stripped.
+func stripReviewerTags(issue string, known map[string]bool) string {
+	for {
+		s := strings.TrimSpace(issue)
+		if !strings.HasPrefix(s, "[") {
+			return s
+		}
+		end := strings.Index(s, "]")
+		if end < 0 {
+			return s
+		}
+		for _, n := range strings.Split(s[1:end], "+") {
+			if !known[strings.TrimSpace(n)] {
+				return s
+			}
+		}
+		issue = s[end+1:]
+	}
+}
+
 // clusterIssues collects every (reviewer, issue) pair, clusters overlapping
 // issues, and renders each cluster as "[r1+r2+...] <issue text>" in canonical
 // reviewer order.
@@ -885,13 +923,16 @@ func clusterIssues(perReviewer map[string]*verdict, reviewerOrder []string) []st
 		})
 	}
 
+	known := knownReviewerNames()
 	for _, rn := range reviewerOrder {
 		v, ok := perReviewer[rn]
 		if !ok || v == nil {
 			continue
 		}
 		for _, issue := range v.Issues {
-			add(rn, issue)
+			if cleaned := stripReviewerTags(issue, known); cleaned != "" {
+				add(rn, cleaned)
+			}
 		}
 	}
 
