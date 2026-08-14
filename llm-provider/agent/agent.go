@@ -26,11 +26,12 @@ import (
 // processes launched concurrently race on that rename and one dies with
 // "ENOENT: no such file or directory, rename '.cursor/cli-config.json.tmp' ->
 // '.cursor/cli-config.json'" (leaving a cli-config.json.bad). converge's audit
-// runs composer-2.5 and grok-build — both the `agent` CLI, distinguished only by
-// --model — in one fan-out, so without this they collide and one is lost as a skip.
-// Holding the lock across the whole run is the simplest provably race-free fix; the
-// two Cursor models run back-to-back rather than concurrently (a bounded latency
-// cost, worth a reliable verdict from both). Other providers (claude/codex/agy)
+// runs several agent-CLI reviewers (composer-2.5, grok-build, kimi, glm — the
+// same `agent` binary, distinguished only by --model) in one fan-out, so without
+// this they collide and one is lost as a skip.
+// Holding the lock across the whole run is the simplest provably race-free fix;
+// the Cursor models run back-to-back rather than concurrently (a bounded latency
+// cost, worth a reliable verdict from each). Other providers (claude/codex/agy)
 // never take this lock, so they stay fully parallel. A future optimization could
 // release the lock once the config write settles instead of after the whole run.
 var agentMu sync.Mutex
@@ -103,6 +104,19 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 	}
 	args = append(args, string(prompt))
 
+	// Serialize the actual CLI run so concurrent `agent` invocations (e.g.
+	// composer-2.5 + grok-build in one audit) don't race on
+	// ~/.cursor/cli-config.json. Take the lock BEFORE starting the timeout
+	// clock: an audit can queue several agent-CLI reviewers back-to-back, and
+	// a queued reviewer must not burn its timeout budget waiting its turn.
+	if !agentMu.TryLock() {
+		if !opts.Quiet {
+			fmt.Fprintf(opts.Stderr, "[agent] waiting for the agent CLI lock (serialized with other Cursor reviewers)\n")
+		}
+		agentMu.Lock()
+	}
+	defer agentMu.Unlock()
+
 	cctx, cancel := context.WithTimeout(ctx, opts.Timeout)
 	defer cancel()
 
@@ -117,11 +131,7 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 		fmt.Fprintf(opts.Stderr, "[agent] starting (timeout=%s)\n", opts.Timeout)
 	}
 
-	// Serialize the actual CLI run so concurrent `agent` invocations (e.g.
-	// composer-2.5 + grok-build in one audit) don't race on ~/.cursor/cli-config.json.
-	agentMu.Lock()
 	runErr := cmd.Run()
-	agentMu.Unlock()
 
 	if cctx.Err() == context.DeadlineExceeded {
 		// Deliver whatever output was captured before the kill so the caller

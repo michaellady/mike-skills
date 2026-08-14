@@ -246,7 +246,12 @@ func Run(args []string) int {
 	var label string
 	var ledgerPath string
 	fs.StringVar(&promptFile, "prompt-file", "", "path to prompt file; if empty, read from stdin")
-	fs.IntVar(&timeoutSec, "timeout", 300, "per-reviewer timeout (seconds)")
+	// 600s default: on a ~68KB audit prompt, codex/claude at max effort ran
+	// 400-700s — a 300s default skipped 3 of 8 reviewers. Size up for large
+	// prompts (~60KB → 600s+; the salvage path recovers late completions, but
+	// only budget makes them on-time). agent-CLI reviewers are serialized;
+	// their clock starts when the reviewer actually starts, not while queued.
+	fs.IntVar(&timeoutSec, "timeout", 600, "per-reviewer timeout in seconds, measured from when the reviewer starts")
 	fs.BoolVar(&quiet, "quiet", false, "suppress provider heartbeat lines on stderr")
 	fs.StringVar(&reviewersCSV, "reviewers", defaultReviewers,
 		"comma-separated reviewers to dispatch (registered: claude,codex,agent,composer-2.5,grok-build,agy)")
