@@ -127,7 +127,7 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 		return provider.NewError(provider.ExitBadArgs, "start claude: %v", err)
 	}
 
-	final, capturedID, sawAuthErr := streamFilter(stdout, opts)
+	final, partial, capturedID, sawAuthErr := streamFilter(stdout, opts)
 	if capturedID != "" {
 		sessionID = capturedID
 	}
@@ -135,13 +135,35 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 	waitErr := cmd.Wait()
 
 	if errors.Is(cctx.Err(), context.DeadlineExceeded) {
-		return provider.NewError(provider.ExitTimeout, "claude timed out after %s", opts.Timeout)
+		// Distinguish the three deadline shapes — a bare "no result event in
+		// stream" here is a timeout symptom, not a stream-parse failure. In
+		// each case deliver what was captured so the caller can salvage a
+		// complete verdict or persist the partial for manual recovery.
+		if final != "" {
+			// The result event landed even though the deadline fired (the
+			// stream can outlive the kill) — a complete answer exists.
+			_, _ = io.WriteString(opts.Stdout, final)
+			return provider.NewError(provider.ExitTimeout, "claude timed out after %s (completed late; result delivered on stdout)", opts.Timeout)
+		}
+		if partial != "" {
+			_, _ = io.WriteString(opts.Stdout, partial)
+			return provider.NewError(provider.ExitTimeout, "claude timed out after %s (no result event; %d chars of partial assistant text delivered on stdout)", opts.Timeout, len(partial))
+		}
+		return provider.NewError(provider.ExitTimeout, "claude timed out after %s (no output)", opts.Timeout)
 	}
 	if sawAuthErr || isAuthError(errBuf.String()) {
 		return provider.NewError(provider.ExitAuthError, "claude auth error — run `claude auth` or set ANTHROPIC_API_KEY")
 	}
 	if final == "" {
+		// Stream ended without a result event and without hitting the
+		// deadline — a genuine stream failure (CLI crash, malformed stream).
+		if partial != "" {
+			_, _ = io.WriteString(opts.Stdout, partial)
+		}
 		msg := "no final assistant message in stream-json output"
+		if partial != "" {
+			msg += fmt.Sprintf(" (%d chars of partial assistant text delivered on stdout)", len(partial))
+		}
 		if errBuf.Len() > 0 {
 			tail := errBuf.String()
 			if len(tail) > 500 {
@@ -166,8 +188,10 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 
 // streamFilter parses claude's stream-json output. Each line is a JSON
 // envelope with a `type` field. We surface human-readable heartbeat lines
-// to stderr and capture the final assistant text.
-func streamFilter(r io.Reader, opts provider.Options) (final, sessionID string, authErr bool) {
+// to stderr and capture the final assistant text. `partial` is the last
+// assistant-event text seen — the best available answer when the stream
+// ends (timeout kill, CLI crash) before a result event lands.
+func streamFilter(r io.Reader, opts provider.Options) (final, partial, sessionID string, authErr bool) {
 	start := time.Now()
 	lastLog := start
 	scanner := bufio.NewScanner(r)
@@ -216,6 +240,7 @@ func streamFilter(r io.Reader, opts provider.Options) (final, sessionID string, 
 			// progressively but rely on the `result` event for the final
 			// authoritative answer.
 			if t := assistantText(ev); t != "" {
+				partial = t
 				logf("assistant: %s", trim(t, 80))
 			}
 		case "user":
@@ -234,10 +259,18 @@ func streamFilter(r io.Reader, opts provider.Options) (final, sessionID string, 
 		}
 		lastLog = time.Now()
 	}
+	// Neutral wording on purpose: at this layer we can't tell a timeout kill
+	// from a genuine stream failure — Run classifies and reports which. (The
+	// old "ERROR: no result event in stream" line read as a parse failure
+	// even when the deadline was simply hit.)
 	if final == "" && !authErr {
-		logf("ERROR: no result event in stream")
+		if partial != "" {
+			logf("stream ended without a result event (%d chars of assistant text captured)", len(partial))
+		} else {
+			logf("stream ended without a result event")
+		}
 	}
-	return final, sessionID, authErr
+	return final, partial, sessionID, authErr
 }
 
 // event covers the fields we read from claude's stream-json output. Other
@@ -254,9 +287,10 @@ type event struct {
 	} `json:"message,omitempty"`
 }
 
-// assistantText extracts the first textual chunk from an assistant event's
-// message.content array. Content can be a string or an array of typed blocks
-// ([{type:"text", text:"..."}, ...]).
+// assistantText extracts the textual content of an assistant event's
+// message.content. Content can be a string or an array of typed blocks
+// ([{type:"text", text:"..."}, ...]); all text blocks are joined so a
+// multi-block message survives intact when kept as the partial answer.
 func assistantText(ev event) string {
 	if len(ev.Message.Content) == 0 {
 		return ""
@@ -272,11 +306,13 @@ func assistantText(ev event) string {
 		Text string `json:"text"`
 	}
 	if err := json.Unmarshal(ev.Message.Content, &blocks); err == nil {
+		parts := []string{}
 		for _, b := range blocks {
 			if b.Type == "text" && b.Text != "" {
-				return b.Text
+				parts = append(parts, b.Text)
 			}
 		}
+		return strings.Join(parts, "\n")
 	}
 	return ""
 }
