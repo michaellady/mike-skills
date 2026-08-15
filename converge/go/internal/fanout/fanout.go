@@ -32,6 +32,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -246,12 +247,14 @@ func Run(args []string) int {
 	var label string
 	var ledgerPath string
 	fs.StringVar(&promptFile, "prompt-file", "", "path to prompt file; if empty, read from stdin")
-	// 600s default: on a ~68KB audit prompt, codex/claude at max effort ran
-	// 400-700s — a 300s default skipped 3 of 8 reviewers. Size up for large
-	// prompts (~60KB → 600s+; the salvage path recovers late completions, but
-	// only budget makes them on-time). agent-CLI reviewers are serialized;
-	// their clock starts when the reviewer actually starts, not while queued.
-	fs.IntVar(&timeoutSec, "timeout", 600, "per-reviewer timeout in seconds, measured from when the reviewer starts")
+	// 900s default: on real audit prompts (48-68KB), codex at max effort ran
+	// 400-700s and claude at xhigh exceeded 600s — a short default skips
+	// exactly the strongest reviewers (the salvage path recovers late
+	// completions, but only budget makes them on-time). agent-CLI reviewers
+	// are serialized; their clock starts when the reviewer actually starts,
+	// not while queued. Worst-case wall clock per reviewer is 2x this value
+	// (the post-timeout drain is bounded by one extra timeout).
+	fs.IntVar(&timeoutSec, "timeout", 900, "per-reviewer timeout in seconds, measured from when the reviewer starts")
 	fs.BoolVar(&quiet, "quiet", false, "suppress provider heartbeat lines on stderr")
 	fs.StringVar(&reviewersCSV, "reviewers", defaultReviewers,
 		"comma-separated reviewers to dispatch (registered: claude,codex,agent,composer-2.5,grok-build,agy,kimi,glm,gpt-oss)")
@@ -413,6 +416,13 @@ func classifyResult(raw string, runErr error, rawPath string) classification {
 	// outside the audit (quota, auth, timeout) is "skipped", not a
 	// malformed-output parse_error. Keeps the merged result honest.
 	reason, unavailable := unavailableReason(runErr)
+	// The typed ExitTimeout code is authoritative for the timeout branch —
+	// unavailableReason keyword-matches the message, and provider error texts
+	// drift; the salvage path must not silently die on a reworded error.
+	var pe *provider.Error
+	if errors.As(runErr, &pe) && pe.Code == provider.ExitTimeout {
+		reason, unavailable = "timed out", true
+	}
 	if !unavailable {
 		return classification{parseError: true}
 	}
@@ -969,7 +979,7 @@ func merge(parsed map[string]*reviewerResp, selected []reviewerSpec) mergedResp 
 func knownReviewerNames() map[string]bool {
 	m := make(map[string]bool, len(registeredReviewers))
 	for _, r := range registeredReviewers {
-		m[r.name] = true
+		m[strings.ToLower(r.name)] = true
 	}
 	return m
 }
@@ -994,7 +1004,9 @@ func stripReviewerTags(issue string, known map[string]bool) string {
 			return s
 		}
 		for _, n := range strings.Split(s[1:end], "+") {
-			if !known[strings.TrimSpace(n)] {
+			// Case-insensitive: reviewers echo tags as "[Claude]"/"[CODEX]"
+			// as readily as lowercase.
+			if !known[strings.ToLower(strings.TrimSpace(n))] {
 				return s
 			}
 		}

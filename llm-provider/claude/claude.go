@@ -44,7 +44,10 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 		return provider.NewError(provider.ExitBadArgs, "claude CLI not on PATH (install Claude Code first)")
 	}
 	if opts.Timeout == 0 {
-		opts.Timeout = 5 * time.Minute
+		// 15m: claude at xhigh on large (~50KB) prompts has exceeded 10m
+		// before emitting anything; a completed run returns immediately, so a
+		// generous ceiling only costs time when the run would otherwise die.
+		opts.Timeout = 15 * time.Minute
 		if v := os.Getenv("CONVERGE_CLAUDE_TIMEOUT"); v != "" {
 			if n, err := strconv.Atoi(v); err == nil {
 				opts.Timeout = time.Duration(n) * time.Second
@@ -146,7 +149,13 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 		if final != "" {
 			// The result event landed even though the deadline fired (the
 			// stream can outlive the kill) — a complete answer exists.
+			// Persist the session id too (as the codex late path does its
+			// thread id) so a salvaged verdict keeps its resume handle.
 			_, _ = io.WriteString(opts.Stdout, final)
+			if opts.ResumeID == "" && sessionID != "" {
+				_ = os.MkdirAll(filepath.Dir(opts.ThreadOut), 0o755)
+				_ = os.WriteFile(opts.ThreadOut, []byte(sessionID), 0o644)
+			}
 			return provider.NewError(provider.ExitTimeout, "claude timed out after %s (completed late; result delivered on stdout)", opts.Timeout)
 		}
 		if partial != "" {

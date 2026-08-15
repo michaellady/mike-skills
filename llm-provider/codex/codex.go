@@ -45,7 +45,9 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 		opts.Effort = "xhigh"
 	}
 	if opts.Timeout == 0 {
-		opts.Timeout = 5 * time.Minute
+		// 15m: max-effort runs on large prompts have taken 700s+; a completed
+		// run returns immediately, so the generous ceiling is cheap.
+		opts.Timeout = 15 * time.Minute
 		if v := os.Getenv("CONVERGE_CODEX_TIMEOUT"); v != "" {
 			if n, err := strconv.Atoi(v); err == nil {
 				opts.Timeout = time.Duration(n) * time.Second

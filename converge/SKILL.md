@@ -363,10 +363,10 @@ Return ONLY this JSON, no prose:
 
 ```bash
 printf '%s' "$ASSEMBLED_PROMPT" | bin/converge audit
-# or: bin/converge audit --prompt-file /tmp/audit-prompt.txt --reviewers claude,codex,agy,composer-2.5,grok-build,kimi,glm,gpt-oss --timeout 600
+# or: bin/converge audit --prompt-file /tmp/audit-prompt.txt --reviewers claude,codex,agy,composer-2.5,grok-build,kimi,glm,gpt-oss --timeout 900
 ```
 
-**Timeout sizing.** `--timeout` is per-reviewer, default 600s. Size it to the prompt: a small prompt (≤10KB) is fine at 300s, but a large one (~60KB, e.g. a full diff audit) needs **600s+** — codex/claude/composer at max effort have taken 400–700s on prompts that size, and an undersized timeout skips exactly the strongest reviewers. A reviewer that completes shortly after its deadline is salvaged into the merge (see below), but salvage is a safety net, not a budget. agent-CLI reviewers (composer-2.5, grok-build, kimi, glm) run serialized; each one's clock starts when it actually starts, not while it queues.
+**Timeout sizing.** `--timeout` is per-reviewer, default 900s (15 min). Size it to the prompt: a small prompt (≤10KB) is fine at 300s, but a large one (~50–70KB, e.g. a full diff audit) needs the full default — codex at max effort has taken 400–700s on prompts that size, and claude at xhigh has exceeded 600s, so an undersized timeout skips exactly the strongest reviewers. A reviewer that completes shortly after its deadline is salvaged into the merge (see below), but salvage is a safety net, not a budget; the post-timeout drain is bounded, so worst-case wall clock per reviewer is 2× the timeout. agent-CLI reviewers (composer-2.5, grok-build, kimi, glm) run serialized; each one's clock starts when it actually starts, not while it queues.
 
 3. Read the merged canonical JSON on stdout:
 

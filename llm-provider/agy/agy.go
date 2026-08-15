@@ -42,7 +42,9 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 		return provider.NewError(provider.ExitBadArgs, "agy CLI not on PATH")
 	}
 	if opts.Timeout == 0 {
-		opts.Timeout = 5 * time.Minute
+		// 15m, uniform with the other providers: a completed run returns
+		// immediately, so the generous ceiling is cheap.
+		opts.Timeout = 15 * time.Minute
 		if v := os.Getenv("CONVERGE_AGY_TIMEOUT"); v != "" {
 			if n, err := strconv.Atoi(v); err == nil {
 				opts.Timeout = time.Duration(n) * time.Second

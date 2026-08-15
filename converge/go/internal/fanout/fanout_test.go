@@ -4,6 +4,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/michaellady/mike-skills/llm-provider/provider"
 )
 
 func TestParseResponse_Plain(t *testing.T) {
@@ -294,6 +296,8 @@ func TestStripReviewerTags(t *testing.T) {
 	cases := map[string]string{
 		"[claude] R6 Lambda applies immutable Cache-Control": "R6 Lambda applies immutable Cache-Control",
 		"[kimi+glm] duplicated finding":                      "duplicated finding",
+		"[Claude] capitalized echo":                          "capitalized echo",
+		"[KIMI+GLM] uppercase echo":                          "uppercase echo",
 		"[claude] [codex] stacked tags":                      "stacked tags",
 		"[high] a.go:1 — severity tag preserved":             "[high] a.go:1 — severity tag preserved",
 		"[CRITICAL] not a reviewer name":                     "[CRITICAL] not a reviewer name",
@@ -492,6 +496,9 @@ func (e errString) Error() string { return string(e) }
 func TestClassifyResult(t *testing.T) {
 	valid := `{"summary":"some_fail","verdicts":[{"draft_id":"d","verdict":"FAIL","issues":["x"]}]}`
 	timeoutErr := errString("codex timed out after 7m0s (completed late; captured message delivered on stdout)")
+	// A typed ExitTimeout whose message carries NO timeout keyword — the
+	// typed code must drive the salvage branch, not the message text.
+	typedTimeoutErr := provider.NewError(provider.ExitTimeout, "reworded deadline error with no keyword")
 	cases := []struct {
 		name       string
 		raw        string
@@ -505,6 +512,8 @@ func TestClassifyResult(t *testing.T) {
 		{"clean response", valid, nil, "/p/codex.txt", true, false, "", false},
 		{"clean garbage", "not json at all whatsoever", nil, "/p/x.txt", false, false, "", true},
 		{"timeout with late complete verdict", valid, timeoutErr, "/p/codex.txt", true, true, "", false},
+		{"typed timeout, reworded message", valid, typedTimeoutErr, "/p/codex.txt", true, true, "", false},
+		{"typed timeout, no output", "", typedTimeoutErr, "", false, false, "timed out (no output)", false},
 		{"timeout with unparsed output", "partial narra", timeoutErr, "/p/claude.txt", false, false, "timed out (unparsed output at /p/claude.txt)", false},
 		{"timeout with unparsed output, persist failed", "partial narra", timeoutErr, "", false, false, "timed out (unparsed output)", false},
 		{"timeout no output", "", timeoutErr, "", false, false, "timed out (no output)", false},
