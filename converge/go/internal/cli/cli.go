@@ -125,20 +125,27 @@ LLM transport (codex, claude, agent, or agy)
                                          Alias for llm-critique --provider claude.
 
 Adversarial audit (fresh-eyes fan-out — the folded adversarial-review)
-  audit [--reviewers <csv>] [--prompt-file <p>] [--timeout <s>] [--quiet]
+  audit [--level light|medium|deep] [--reviewers <csv>] [--prompt-file <p>]
+        [--timeout <s>] [--effort <e>] [--quiet]
                                          Fan the SAME composed prompt out to all
                                          reviewers in parallel, FAIL-OR merge,
                                          emit canonical {summary,verdicts,...}
                                          JSON. Prompt from --prompt-file or stdin.
-                                         Default reviewers: claude,codex,agy,
-                                         composer-2.5,grok-build,kimi,glm,gpt-oss
-                                         (bare "agent" is opt-in).
+                                         --level presets reviewers/effort/timeout
+                                         (default deep = all 8 reviewers, xhigh,
+                                         900s; light = claude,codex, medium
+                                         effort, 300s; medium = 5 frontier, high,
+                                         600s); explicit flags override. Bare
+                                         "agent" reviewer is opt-in.
 
 Ledger (SQLite audit history for model comparison)
-  ledger stats                           Per-model table: audits participated,
+  ledger stats [--by-level]              Per-model table: audits participated,
                                          responded/skipped/parse_error (+ rate),
                                          findings by severity, and precision
                                          (fixed / fixed+false_positive).
+                                         --by-level breaks rows out per review
+                                         level (light/medium/deep) to compare
+                                         model families across review depths.
   ledger findings [--limit N]            List the N most recent findings (ts,
                                          severity, title, loc, raised_by,
                                          finding_id, current disposition).
@@ -455,7 +462,16 @@ func runLedger(args []string) int {
 	action, rest := args[0], args[1:]
 	switch action {
 	case "stats":
-		if err := ledger.Stats(os.Stdout); err != nil {
+		byLevel := false
+		for _, a := range rest {
+			if a == "--by-level" {
+				byLevel = true
+				continue
+			}
+			fmt.Fprintln(os.Stderr, "ledger stats: unexpected argument", a)
+			return 2
+		}
+		if err := ledger.Stats(os.Stdout, byLevel); err != nil {
 			fmt.Fprintln(os.Stderr, "ledger stats:", err)
 			return 1
 		}

@@ -58,6 +58,7 @@ type AuditRecord struct {
 	TS                 string
 	Label              string
 	Summary            string
+	Level              string // review depth preset (light|medium|deep); "" on pre-level rows
 	PromptSHA256       string
 	ReviewersRequested string
 	DurationMs         int64
@@ -194,6 +195,48 @@ func ensureSchema(db *sql.DB) error {
 			return fmt.Errorf("ensure schema: %w", err)
 		}
 	}
+	// Additive migrations: CREATE TABLE IF NOT EXISTS never adds columns to
+	// an existing DB, so new columns are ensured individually.
+	// audits.level (2026-08): the review-depth preset, for per-level model
+	// evaluation via `ledger stats --by-level`.
+	if err := ensureColumn(db, "audits", "level", "TEXT"); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ensureColumn adds table.col if it doesn't exist yet (SQLite has no ADD
+// COLUMN IF NOT EXISTS).
+func ensureColumn(db *sql.DB, table, col, typ string) error {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return fmt.Errorf("table_info %s: %w", table, err)
+	}
+	found := false
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan table_info %s: %w", table, err)
+		}
+		if name == col {
+			found = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("iterate table_info %s: %w", table, err)
+	}
+	_ = rows.Close()
+	if found {
+		return nil
+	}
+	if _, err := db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, col, typ)); err != nil {
+		return fmt.Errorf("add column %s.%s: %w", table, col, err)
+	}
 	return nil
 }
 
@@ -212,9 +255,9 @@ func Record(rec AuditRecord) error {
 	rollback := func() { _ = tx.Rollback() }
 
 	if _, err := tx.Exec(
-		`INSERT INTO audits(audit_id, ts, label, summary, prompt_sha256, reviewers_requested, duration_ms)
-		 VALUES(?, ?, ?, ?, ?, ?, ?)`,
-		rec.AuditID, rec.TS, rec.Label, rec.Summary, rec.PromptSHA256, rec.ReviewersRequested, rec.DurationMs,
+		`INSERT INTO audits(audit_id, ts, label, summary, level, prompt_sha256, reviewers_requested, duration_ms)
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+		rec.AuditID, rec.TS, rec.Label, rec.Summary, rec.Level, rec.PromptSHA256, rec.ReviewersRequested, rec.DurationMs,
 	); err != nil {
 		rollback()
 		return fmt.Errorf("insert audit: %w", err)
@@ -288,41 +331,57 @@ func newModelStat() *modelStat {
 	return &modelStat{bySeverity: map[string]int{}}
 }
 
+// statKey identifies one stats row: a model, optionally broken out by the
+// review level of the audit each review/finding belonged to.
+type statKey struct {
+	model string
+	level string // "" when not breaking out, or for pre-level audit rows
+}
+
 // Stats prints a per-model table: participation, responded/skipped/parse_error
 // (+ response rate), findings raised by severity, and precision = fixed /
-// (fixed+false_positive). A totals row aggregates across models.
-func Stats(w io.Writer) error {
+// (fixed+false_positive). A totals row aggregates across models. With byLevel,
+// rows break out per (model, level) — level comes from the audit each
+// review/finding belongs to ("-" for rows recorded before levels existed) —
+// so model families can be evaluated per review depth.
+func Stats(w io.Writer, byLevel bool) error {
 	db, err := open()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = db.Close() }()
 
-	stats := map[string]*modelStat{}
-	order := []string{} // first-seen model order, stable output
+	stats := map[statKey]*modelStat{}
+	order := []statKey{} // first-seen order; sorted before render
 
-	get := func(model string) *modelStat {
-		s, ok := stats[model]
+	get := func(k statKey) *modelStat {
+		s, ok := stats[k]
 		if !ok {
 			s = newModelStat()
-			stats[model] = s
-			order = append(order, model)
+			stats[k] = s
+			order = append(order, k)
 		}
 		return s
 	}
 
-	// Reviews: participation + status counts.
-	rows, err := db.Query(`SELECT model, status FROM reviews`)
+	// Reviews: participation + status counts (joined to audits for the level
+	// when breaking out).
+	reviewsQ := `SELECT model, '', status FROM reviews`
+	if byLevel {
+		reviewsQ = `SELECT r.model, COALESCE(a.level, ''), r.status
+			FROM reviews r LEFT JOIN audits a ON a.audit_id = r.audit_id`
+	}
+	rows, err := db.Query(reviewsQ)
 	if err != nil {
 		return fmt.Errorf("query reviews: %w", err)
 	}
 	for rows.Next() {
-		var model, status string
-		if err := rows.Scan(&model, &status); err != nil {
+		var model, level, status string
+		if err := rows.Scan(&model, &level, &status); err != nil {
 			_ = rows.Close()
 			return fmt.Errorf("scan review: %w", err)
 		}
-		s := get(model)
+		s := get(statKey{model, level})
 		s.audits++
 		switch status {
 		case "responded":
@@ -342,18 +401,23 @@ func Stats(w io.Writer) error {
 	// Findings raised by severity, attributed to each model named in raised_by.
 	// raised_by clusters reviewers with '+' (e.g. "claude+codex"); a finding
 	// counts for every model whose name appears.
-	frows, err := db.Query(`SELECT severity, raised_by FROM findings`)
+	findingsQ := `SELECT severity, raised_by, '' FROM findings`
+	if byLevel {
+		findingsQ = `SELECT f.severity, f.raised_by, COALESCE(a.level, '')
+			FROM findings f LEFT JOIN audits a ON a.audit_id = f.audit_id`
+	}
+	frows, err := db.Query(findingsQ)
 	if err != nil {
 		return fmt.Errorf("query findings: %w", err)
 	}
 	for frows.Next() {
-		var severity, raisedBy string
-		if err := frows.Scan(&severity, &raisedBy); err != nil {
+		var severity, raisedBy, level string
+		if err := frows.Scan(&severity, &raisedBy, &level); err != nil {
 			_ = frows.Close()
 			return fmt.Errorf("scan finding: %w", err)
 		}
 		for _, m := range splitRaisedBy(raisedBy) {
-			s := get(m)
+			s := get(statKey{m, level})
 			s.bySeverity[strings.ToUpper(severity)]++
 		}
 	}
@@ -363,42 +427,69 @@ func Stats(w io.Writer) error {
 	}
 	_ = frows.Close()
 
-	// Precision: for each model, join its findings (raised_by LIKE %model%) to
-	// dispositions and count fixed vs. false_positive.
-	for _, model := range order {
-		fixed, falsePos, err := precisionCounts(db, model)
+	// Precision: for each row, join its findings (raised_by LIKE %model%,
+	// level-filtered when breaking out) to dispositions.
+	for _, k := range order {
+		fixed, falsePos, err := precisionCounts(db, k.model, k.level, byLevel)
 		if err != nil {
 			return err
 		}
-		s := get(model)
+		s := get(k)
 		s.fixed = fixed
 		s.falsePos = falsePos
 	}
 	// A model may appear only in findings (never in reviews) — make sure those
 	// also got precision computed. order already includes them via get().
 
-	sort.Strings(order)
-	return renderStats(w, order, stats)
+	sort.Slice(order, func(i, j int) bool {
+		if order[i].model != order[j].model {
+			return order[i].model < order[j].model
+		}
+		return levelRank(order[i].level) < levelRank(order[j].level)
+	})
+	return renderStats(w, order, stats, byLevel)
+}
+
+// levelRank orders light < medium < deep < anything else (incl. pre-level "").
+func levelRank(l string) int {
+	switch l {
+	case "light":
+		return 0
+	case "medium":
+		return 1
+	case "deep":
+		return 2
+	}
+	return 3
 }
 
 // precisionCounts returns (fixed, false_positive) over distinct findings raised
-// by model that have a disposition. A finding counts once per kind regardless of
-// how many disposition rows it has of that kind.
-func precisionCounts(db *sql.DB, model string) (int, int, error) {
-	q := `
+// by model that have a disposition — filtered to one audit level when byLevel.
+// A finding counts once per kind regardless of how many disposition rows it has
+// of that kind.
+func precisionCounts(db *sql.DB, model, level string, byLevel bool) (int, int, error) {
+	join, extra := "", ""
+	args := []any{model}
+	if byLevel {
+		join = "LEFT JOIN audits a ON a.audit_id = f.audit_id"
+		extra = "AND COALESCE(a.level, '') = ?"
+		args = append(args, level)
+	}
+	q := fmt.Sprintf(`
 		SELECT
 			SUM(CASE WHEN d.kind='fixed' THEN 1 ELSE 0 END),
 			SUM(CASE WHEN d.kind='false_positive' THEN 1 ELSE 0 END)
 		FROM (
 			SELECT DISTINCT f.finding_id
 			FROM findings f
-			WHERE f.raised_by LIKE '%' || ? || '%'
+			%s
+			WHERE f.raised_by LIKE '%%' || ? || '%%' %s
 		) fr
 		JOIN (
 			SELECT DISTINCT finding_id, kind FROM dispositions
-		) d ON d.finding_id = fr.finding_id`
+		) d ON d.finding_id = fr.finding_id`, join, extra)
 	var fixed, falsePos sql.NullInt64
-	if err := db.QueryRow(q, model).Scan(&fixed, &falsePos); err != nil {
+	if err := db.QueryRow(q, args...).Scan(&fixed, &falsePos); err != nil {
 		return 0, 0, fmt.Errorf("precision for %q: %w", model, err)
 	}
 	return int(fixed.Int64), int(falsePos.Int64), nil
@@ -417,14 +508,19 @@ func splitRaisedBy(raisedBy string) []string {
 	return out
 }
 
-func renderStats(w io.Writer, order []string, stats map[string]*modelStat) error {
-	fmt.Fprintf(w, "%-16s %7s %9s %7s %11s %8s %4s %4s %6s %3s %9s\n",
-		"MODEL", "AUDITS", "RESPONDED", "SKIP", "PARSE_ERR", "RESP_RATE", "CRIT", "HIGH", "MEDIUM", "LOW", "PRECISION")
+func renderStats(w io.Writer, order []statKey, stats map[statKey]*modelStat, byLevel bool) error {
+	if byLevel {
+		fmt.Fprintf(w, "%-16s %-8s %7s %9s %7s %11s %8s %4s %4s %6s %3s %9s\n",
+			"MODEL", "LEVEL", "AUDITS", "RESPONDED", "SKIP", "PARSE_ERR", "RESP_RATE", "CRIT", "HIGH", "MEDIUM", "LOW", "PRECISION")
+	} else {
+		fmt.Fprintf(w, "%-16s %7s %9s %7s %11s %8s %4s %4s %6s %3s %9s\n",
+			"MODEL", "AUDITS", "RESPONDED", "SKIP", "PARSE_ERR", "RESP_RATE", "CRIT", "HIGH", "MEDIUM", "LOW", "PRECISION")
+	}
 
 	totals := newModelStat()
-	for _, model := range order {
-		s := stats[model]
-		writeStatRow(w, model, s)
+	for _, k := range order {
+		s := stats[k]
+		writeStatRow(w, k.model, k.level, byLevel, s)
 		totals.audits += s.audits
 		totals.responded += s.responded
 		totals.skipped += s.skipped
@@ -436,15 +532,25 @@ func renderStats(w io.Writer, order []string, stats map[string]*modelStat) error
 		totals.falsePos += s.falsePos
 	}
 	if len(order) > 0 {
-		fmt.Fprintln(w, strings.Repeat("-", 100))
+		fmt.Fprintln(w, strings.Repeat("-", 109))
 	}
-	writeStatRow(w, "TOTAL", totals)
+	writeStatRow(w, "TOTAL", "", byLevel, totals)
 	return nil
 }
 
-func writeStatRow(w io.Writer, model string, s *modelStat) {
-	fmt.Fprintf(w, "%-16s %7d %9d %7d %11d %8s %4d %4d %6d %3d %9s\n",
-		model,
+func writeStatRow(w io.Writer, model, level string, byLevel bool, s *modelStat) {
+	if byLevel {
+		if level == "" {
+			level = "-"
+		}
+		if model == "TOTAL" {
+			level = ""
+		}
+		fmt.Fprintf(w, "%-16s %-8s ", model, level)
+	} else {
+		fmt.Fprintf(w, "%-16s ", model)
+	}
+	fmt.Fprintf(w, "%7d %9d %7d %11d %8s %4d %4d %6d %3d %9s\n",
 		s.audits,
 		s.responded,
 		s.skipped,

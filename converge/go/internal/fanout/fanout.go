@@ -234,6 +234,48 @@ var registeredReviewers = []reviewerSpec{
 // NOT `parse_error` — so the remaining reviewers still produce a merged verdict.
 const defaultReviewers = "claude,codex,agy,composer-2.5,grok-build,kimi,glm,gpt-oss"
 
+// levelPreset is what a --level expands to. CHOOSING a level is the caller's
+// judgment (see SKILL.md's guidance table — stakes and complexity of the
+// artifact); the preset table is just the canonical expansion so every caller
+// means the same thing by "light"/"medium"/"deep". Explicit --reviewers,
+// --timeout, and --effort flags override their preset field individually.
+type levelPreset struct {
+	reviewers string
+	effort    string // consumed by reviewers that support it (codex, claude)
+	timeoutS  int
+}
+
+// levelPresets scales review depth with artifact stakes. Latency scales
+// mostly with reviewer COUNT (the agent-CLI reviewers run serialized) and
+// timeout; effort scales cost/depth more than latency. Models stay top-tier
+// at every level (highest-by-default) so ledger comparisons across levels
+// measure depth, not model tier.
+var levelPresets = map[string]levelPreset{
+	"light":  {reviewers: "claude,codex", effort: "medium", timeoutS: 300},
+	"medium": {reviewers: "claude,codex,agy,composer-2.5,grok-build", effort: "high", timeoutS: 600},
+	"deep":   {reviewers: defaultReviewers, effort: "xhigh", timeoutS: 900},
+}
+
+// applyLevel resolves the effective reviewers/timeout/effort: the level's
+// preset fills any knob the caller didn't set explicitly (per the set map of
+// explicitly-passed flag names). Empty effort means the preset's effort.
+func applyLevel(level string, set map[string]bool, reviewersCSV string, timeoutSec int, effort string) (string, int, string, error) {
+	p, ok := levelPresets[level]
+	if !ok {
+		return "", 0, "", fmt.Errorf("unknown --level %q (levels: light, medium, deep)", level)
+	}
+	if !set["reviewers"] {
+		reviewersCSV = p.reviewers
+	}
+	if !set["timeout"] {
+		timeoutSec = p.timeoutS
+	}
+	if effort == "" {
+		effort = p.effort
+	}
+	return reviewersCSV, timeoutSec, effort, nil
+}
+
 // Run executes one audit fan-out. args are the `converge audit` subcommand
 // args (flags only). Returns the desired process exit code.
 func Run(args []string) int {
@@ -246,22 +288,35 @@ func Run(args []string) int {
 	var noLedger bool
 	var label string
 	var ledgerPath string
+	var level string
+	var effort string
 	fs.StringVar(&promptFile, "prompt-file", "", "path to prompt file; if empty, read from stdin")
-	// 900s default: on real audit prompts (48-68KB), codex at max effort ran
-	// 400-700s and claude at xhigh exceeded 600s — a short default skips
+	// 900s deep default: on real audit prompts (48-68KB), codex at max effort
+	// ran 400-700s and claude at xhigh exceeded 600s — a short default skips
 	// exactly the strongest reviewers (the salvage path recovers late
 	// completions, but only budget makes them on-time). agent-CLI reviewers
 	// are serialized; their clock starts when the reviewer actually starts,
 	// not while queued. Worst-case wall clock per reviewer is 2x this value
 	// (the post-timeout drain is bounded by one extra timeout).
-	fs.IntVar(&timeoutSec, "timeout", 900, "per-reviewer timeout in seconds, measured from when the reviewer starts")
+	fs.IntVar(&timeoutSec, "timeout", 900, "per-reviewer timeout in seconds, measured from when the reviewer starts (overrides the --level preset)")
 	fs.BoolVar(&quiet, "quiet", false, "suppress provider heartbeat lines on stderr")
 	fs.StringVar(&reviewersCSV, "reviewers", defaultReviewers,
-		"comma-separated reviewers to dispatch (registered: claude,codex,agent,composer-2.5,grok-build,agy,kimi,glm,gpt-oss)")
+		"comma-separated reviewers to dispatch (registered: claude,codex,agent,composer-2.5,grok-build,agy,kimi,glm,gpt-oss; overrides the --level preset)")
+	fs.StringVar(&level, "level", "deep",
+		"review depth preset: light|medium|deep — sets reviewers, effort, and timeout; explicit flags override individual knobs")
+	fs.StringVar(&effort, "effort", "",
+		"reasoning effort for reviewers that support it (codex, claude): low|medium|high|xhigh; empty = the --level preset's effort")
 	fs.BoolVar(&noLedger, "no-ledger", false, "do not record this audit to the SQLite ledger")
 	fs.StringVar(&label, "label", "", "label for the ledger audit row (defaults to the first draft id)")
 	fs.StringVar(&ledgerPath, "ledger", "", "ledger DB path (overrides CONVERGE_LEDGER for this run)")
 	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	setFlags := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { setFlags[f.Name] = true })
+	reviewersCSV, timeoutSec, effort, err := applyLevel(level, setFlags, reviewersCSV, timeoutSec, effort)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "audit: %v\n", err)
 		return 2
 	}
 
@@ -318,7 +373,7 @@ func Run(args []string) int {
 		go func() {
 			defer wg.Done()
 			provStart := time.Now()
-			s, e := runProvider(r.name, r.make(), r.model, promptPath, timeoutSec, quiet)
+			s, e := runProvider(r.name, r.make(), r.model, promptPath, timeoutSec, effort, quiet)
 			resultsCh <- result{name: r.name, out: s, err: e, latencyMs: time.Since(provStart).Milliseconds()}
 		}()
 	}
@@ -361,7 +416,7 @@ func Run(args []string) int {
 	if len(parsed) == 0 {
 		out.Summary = "parse_error"
 		out.Error = "no reviewers returned a usable verdict (all skipped, errored, or malformed JSON)"
-		recordLedger(auditID, out, parsed, selected, promptPath, label, noLedger, latencyByName, time.Since(start).Milliseconds())
+		recordLedger(auditID, level, out, parsed, selected, promptPath, label, noLedger, latencyByName, time.Since(start).Milliseconds())
 		printReviewerLine(out, parsed, selected, quiet)
 		emit(out)
 		return 2
@@ -379,7 +434,7 @@ func Run(args []string) int {
 	if len(out.Skipped) == 0 {
 		out.Skipped = nil
 	}
-	recordLedger(auditID, out, parsed, selected, promptPath, label, noLedger, latencyByName, time.Since(start).Milliseconds())
+	recordLedger(auditID, level, out, parsed, selected, promptPath, label, noLedger, latencyByName, time.Since(start).Milliseconds())
 	printReviewerLine(out, parsed, selected, quiet)
 	emit(out)
 	return 0
@@ -474,7 +529,7 @@ var locRe = regexp.MustCompile(`\(([^()]*:\d+)\)\s*$`)
 // best-effort: any error is logged to stderr and otherwise ignored so the
 // audit's own exit code and stdout JSON are never affected. Skipped entirely
 // when noLedger is set.
-func recordLedger(auditID string, out mergedResp, parsed map[string]*reviewerResp, selected []reviewerSpec, promptPath, label string, noLedger bool, latency map[string]int64, durationMs int64) {
+func recordLedger(auditID, level string, out mergedResp, parsed map[string]*reviewerResp, selected []reviewerSpec, promptPath, label string, noLedger bool, latency map[string]int64, durationMs int64) {
 	if noLedger {
 		return
 	}
@@ -484,6 +539,7 @@ func recordLedger(auditID string, out mergedResp, parsed map[string]*reviewerRes
 		TS:                 time.Now().UTC().Format(time.RFC3339),
 		Label:              label,
 		Summary:            out.Summary,
+		Level:              level,
 		PromptSHA256:       promptSHA256(promptPath),
 		ReviewersRequested: selectedNames(selected),
 		DurationMs:         durationMs,
@@ -692,11 +748,12 @@ func lookCLI(name string) (string, bool) {
 	return p, true
 }
 
-func runProvider(name string, p provider.Provider, model string, promptPath string, timeoutSec int, quiet bool) (string, error) {
+func runProvider(name string, p provider.Provider, model string, promptPath string, timeoutSec int, effort string, quiet bool) (string, error) {
 	var buf strings.Builder
 	opts := provider.Options{
 		PromptFile: promptPath,
 		Model:      model,
+		Effort:     effort, // consumed by codex/claude; other providers ignore it
 		Timeout:    time.Duration(timeoutSec) * time.Second,
 		Quiet:      quiet,
 		Stdout:     &buf,

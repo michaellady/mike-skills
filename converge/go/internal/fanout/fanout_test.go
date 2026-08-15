@@ -364,6 +364,35 @@ func TestMerge_ThreeWayCluster(t *testing.T) {
 	}
 }
 
+// TestApplyLevel pins the preset expansion and its precedence rule: the
+// level fills only the knobs the caller didn't set explicitly.
+func TestApplyLevel(t *testing.T) {
+	// deep (the default) with untouched flags = today's defaults.
+	r, tm, e, err := applyLevel("deep", map[string]bool{}, defaultReviewers, 900, "")
+	if err != nil || r != defaultReviewers || tm != 900 || e != "xhigh" {
+		t.Fatalf("deep: got (%q, %d, %q, %v)", r, tm, e, err)
+	}
+	// light replaces unset knobs.
+	r, tm, e, err = applyLevel("light", map[string]bool{}, defaultReviewers, 900, "")
+	if err != nil || r != "claude,codex" || tm != 300 || e != "medium" {
+		t.Fatalf("light: got (%q, %d, %q, %v)", r, tm, e, err)
+	}
+	// medium preset.
+	r, tm, e, err = applyLevel("medium", map[string]bool{}, defaultReviewers, 900, "")
+	if err != nil || r != "claude,codex,agy,composer-2.5,grok-build" || tm != 600 || e != "high" {
+		t.Fatalf("medium: got (%q, %d, %q, %v)", r, tm, e, err)
+	}
+	// Explicitly-set flags beat the preset, knob by knob.
+	r, tm, e, err = applyLevel("light", map[string]bool{"reviewers": true, "timeout": true}, "glm", 120, "xhigh")
+	if err != nil || r != "glm" || tm != 120 || e != "xhigh" {
+		t.Fatalf("light+overrides: got (%q, %d, %q, %v)", r, tm, e, err)
+	}
+	// Unknown level is a loud error.
+	if _, _, _, err = applyLevel("ultra", map[string]bool{}, defaultReviewers, 900, ""); err == nil {
+		t.Fatal("unknown level must error")
+	}
+}
+
 func TestSelectReviewers_Default(t *testing.T) {
 	got, err := selectReviewers(defaultReviewers)
 	if err != nil {
