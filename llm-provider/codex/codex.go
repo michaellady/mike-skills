@@ -113,6 +113,14 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 
 	cmd := exec.CommandContext(cctx, "codex", args...)
 	cmd.Stdin = nil
+	// Bounded post-timeout drain. The deadline kill hits only the direct
+	// child; a worker that inherited the stdout pipe can keep it open, and
+	// without a bound the stream read below would block forever. WaitDelay
+	// force-closes the parent pipe ends this long after the kill (or after a
+	// normal exit with I/O still pending), so a late completion can still be
+	// salvaged for up to one extra timeout, but termination is guaranteed at
+	// ~2x the timeout.
+	cmd.WaitDelay = opts.Timeout
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

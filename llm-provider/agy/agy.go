@@ -91,6 +91,10 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 
 	cmd := exec.CommandContext(cctx, "agy", args...)
 	cmd.Stdin = nil
+	// Bounded post-timeout drain: cmd.Run waits for its I/O copiers, which a
+	// never-exiting worker holding the pipe would block forever. WaitDelay
+	// guarantees termination at ~2x the timeout.
+	cmd.WaitDelay = opts.Timeout
 
 	var outBuf, errBuf strings.Builder
 	cmd.Stdout = &outBuf

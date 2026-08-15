@@ -115,6 +115,10 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 
 	cmd := exec.CommandContext(cctx, "claude", args...)
 	cmd.Stdin = nil
+	// Bounded post-timeout drain: without this, a worker that inherited the
+	// stdout pipe and never exits would block the stream read forever.
+	// Salvage window of one extra timeout, guaranteed termination at ~2x.
+	cmd.WaitDelay = opts.Timeout
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
