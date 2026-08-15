@@ -45,7 +45,9 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 		opts.Effort = "xhigh"
 	}
 	if opts.Timeout == 0 {
-		opts.Timeout = 5 * time.Minute
+		// 15m: max-effort runs on large prompts have taken 700s+; a completed
+		// run returns immediately, so the generous ceiling is cheap.
+		opts.Timeout = 15 * time.Minute
 		if v := os.Getenv("CONVERGE_CODEX_TIMEOUT"); v != "" {
 			if n, err := strconv.Atoi(v); err == nil {
 				opts.Timeout = time.Duration(n) * time.Second
@@ -113,6 +115,14 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 
 	cmd := exec.CommandContext(cctx, "codex", args...)
 	cmd.Stdin = nil
+	// Bounded post-timeout drain. The deadline kill hits only the direct
+	// child; a worker that inherited the stdout pipe can keep it open, and
+	// without a bound the stream read below would block forever. WaitDelay
+	// force-closes the parent pipe ends this long after the kill (or after a
+	// normal exit with I/O still pending), so a late completion can still be
+	// salvaged for up to one extra timeout, but termination is guaranteed at
+	// ~2x the timeout.
+	cmd.WaitDelay = opts.Timeout
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -125,19 +135,39 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 		return provider.NewError(provider.ExitBadArgs, "start codex: %v", err)
 	}
 
-	final, threadID := streamFilter(stdout, opts)
+	final, threadID, streamErr := streamFilter(stdout, opts)
 
 	waitErr := cmd.Wait()
 
 	if errors.Is(cctx.Err(), context.DeadlineExceeded) {
-		return provider.NewError(provider.ExitTimeout, "codex timed out after %s", opts.Timeout)
+		// The deadline kill doesn't always end the stream: codex's worker can
+		// outlive the CLI process (it holds the stdout pipe) and complete the
+		// turn late — a full verdict has been captured by the time we get
+		// here. Deliver whatever landed instead of discarding it, so the
+		// caller can salvage a late-but-complete message; the exit code still
+		// reports the deadline.
+		if final != "" {
+			_, _ = io.WriteString(opts.Stdout, final)
+			if opts.ResumeID == "" && threadID != "" {
+				_ = os.MkdirAll(filepath.Dir(opts.ThreadOut), 0o755)
+				_ = os.WriteFile(opts.ThreadOut, []byte(threadID), 0o644)
+			}
+			return provider.NewError(provider.ExitTimeout, "codex timed out after %s (completed late; captured message delivered on stdout)", opts.Timeout)
+		}
+		return provider.NewError(provider.ExitTimeout, "codex timed out after %s (no output)", opts.Timeout)
 	}
 	if isAuthError(errBuf.String()) {
 		return provider.NewError(provider.ExitAuthError, "codex auth error — run `codex login`")
 	}
 	if final == "" {
+		// The REAL cause usually rides the JSONL stream as error/turn.failed events (e.g. the
+		// 2026-07-17 outage: the configured model required a newer CLI, the API 400'd every
+		// turn, and seven audits reported only this generic line + an unrelated stdin note).
+		// Surface the stream error FIRST; stderr is the fallback.
 		msg := "no final assistant message in JSONL stream"
-		if errBuf.Len() > 0 {
+		if streamErr != "" {
+			msg += " (stream error: " + trim(streamErr, 500) + ")"
+		} else if errBuf.Len() > 0 {
 			tail := errBuf.String()
 			if len(tail) > 500 {
 				tail = tail[:500]
@@ -159,7 +189,7 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 	return nil
 }
 
-func streamFilter(r io.Reader, opts provider.Options) (final, threadID string) {
+func streamFilter(r io.Reader, opts provider.Options) (final, threadID, streamErr string) {
 	start := time.Now()
 	lastLog := start
 	scanner := bufio.NewScanner(r)
@@ -241,6 +271,15 @@ func streamFilter(r io.Reader, opts provider.Options) (final, threadID string) {
 			}
 		case ev.Type == "turn.completed" || ev.Type == "thread.completed":
 			logf("turn complete")
+		case ev.Type == "error" || ev.Type == "turn.failed":
+			// Keep the LAST error event — this is the real diagnosis when no assistant
+			// message ever lands (API rejections, model/CLI mismatches, quota errors).
+			if ev.Error.Message != "" {
+				streamErr = ev.Error.Message
+			} else if ev.Message != "" {
+				streamErr = ev.Message
+			}
+			logf("stream error: %s", trim(streamErr, 120))
 		}
 		lastLog = time.Now()
 	}
@@ -249,14 +288,18 @@ func streamFilter(r io.Reader, opts provider.Options) (final, threadID string) {
 	} else {
 		logf("done (final message: %d chars)", len(final))
 	}
-	return final, threadID
+	return final, threadID, streamErr
 }
 
 type event struct {
 	Type     string `json:"type"`
 	ThreadID string `json:"thread_id,omitempty"`
 	Text     string `json:"text,omitempty"`
-	Item     struct {
+	Message  string `json:"message,omitempty"` // {"type":"error","message":...}
+	Error    struct {
+		Message string `json:"message"`
+	} `json:"error,omitempty"` // {"type":"turn.failed","error":{"message":...}}
+	Item struct {
 		ItemType  string `json:"type"`
 		Text      string `json:"text"`
 		Summary   string `json:"summary"`

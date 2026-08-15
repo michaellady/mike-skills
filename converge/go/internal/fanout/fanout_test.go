@@ -1,8 +1,11 @@
 package fanout
 
 import (
+	"os"
 	"strings"
 	"testing"
+
+	"github.com/michaellady/mike-skills/llm-provider/provider"
 )
 
 func TestParseResponse_Plain(t *testing.T) {
@@ -247,6 +250,29 @@ func TestMerge_DedupOverlap(t *testing.T) {
 	}
 }
 
+// TestMerge_DuplicateDraftFromOneReviewer: LLM output is untrusted — a
+// reviewer can emit the same draft_id twice. The later entry must combine
+// FAIL-OR with the earlier one (issues kept), not overwrite it: FAIL then
+// PASS stays FAIL. (Adversarial-review finding on the salvage patch.)
+func TestMerge_DuplicateDraftFromOneReviewer(t *testing.T) {
+	parsed := map[string]*reviewerResp{
+		"claude": {Verdicts: []verdict{
+			{DraftID: "a", Verdict: "FAIL", Issues: []string{"a real problem, found early"}},
+			{DraftID: "a", Verdict: "PASS", Issues: []string{}},
+		}},
+	}
+	got := merge(parsed, selectedFor("claude"))
+	if got.Summary != "some_fail" {
+		t.Fatalf("duplicate PASS must not erase the FAIL: summary = %s", got.Summary)
+	}
+	if len(got.Verdicts) != 1 || got.Verdicts[0].Verdict != "FAIL" {
+		t.Fatalf("want one FAIL verdict, got %#v", got.Verdicts)
+	}
+	if len(got.Verdicts[0].Issues) != 1 || !strings.Contains(got.Verdicts[0].Issues[0], "a real problem") {
+		t.Fatalf("the FAIL's issue must survive the duplicate: %v", got.Verdicts[0].Issues)
+	}
+}
+
 func TestMerge_OnlyClaude(t *testing.T) {
 	parsed := map[string]*reviewerResp{
 		"claude": {Verdicts: []verdict{
@@ -259,6 +285,59 @@ func TestMerge_OnlyClaude(t *testing.T) {
 	}
 	if len(got.Verdicts) != 1 {
 		t.Fatalf("want 1 verdict, got %d", len(got.Verdicts))
+	}
+}
+
+// TestStripReviewerTags pins the attribution-artifact fix: a reviewer that
+// echoes a "[claude]"-style tag from prompt context must have it stripped
+// before clustering, while severity tags and non-reviewer brackets survive.
+func TestStripReviewerTags(t *testing.T) {
+	known := knownReviewerNames()
+	cases := map[string]string{
+		"[claude] R6 Lambda applies immutable Cache-Control": "R6 Lambda applies immutable Cache-Control",
+		"[kimi+glm] duplicated finding":                      "duplicated finding",
+		"[Claude] capitalized echo":                          "capitalized echo",
+		"[KIMI+GLM] uppercase echo":                          "uppercase echo",
+		"[claude] [codex] stacked tags":                      "stacked tags",
+		"[high] a.go:1 — severity tag preserved":             "[high] a.go:1 — severity tag preserved",
+		"[CRITICAL] not a reviewer name":                     "[CRITICAL] not a reviewer name",
+		"no tag at all":                                      "no tag at all",
+		"[claude+unknown-model] mixed bracket kept":          "[claude+unknown-model] mixed bracket kept",
+		"[claude]":                                           "",
+		"[unclosed bracket":                                  "[unclosed bracket",
+	}
+	for in, want := range cases {
+		if got := stripReviewerTags(in, known); got != want {
+			t.Errorf("stripReviewerTags(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestMerge_EchoedTagStripped reproduces the observed artifact: one reviewer's
+// issue text began with its own "[claude]" bracket tag (echoed from prompt
+// context; claude itself was skipped that run), producing a nested
+// "[kimi+glm] [claude] ..." merged issue. The echoed tag must be stripped so
+// the cluster prefix is the only attribution — and so the two reviewers'
+// otherwise-identical issue texts cluster into ONE issue.
+func TestMerge_EchoedTagStripped(t *testing.T) {
+	parsed := map[string]*reviewerResp{
+		"kimi": {Verdicts: []verdict{
+			{DraftID: "a", Verdict: "FAIL", Issues: []string{"[claude] R6 Lambda applies immutable Cache-Control to mutable objects"}},
+		}},
+		"glm": {Verdicts: []verdict{
+			{DraftID: "a", Verdict: "FAIL", Issues: []string{"R6 Lambda applies immutable Cache-Control to mutable objects"}},
+		}},
+	}
+	got := merge(parsed, selectedFor("kimi", "glm"))
+	if len(got.Verdicts[0].Issues) != 1 {
+		t.Fatalf("want 1 clustered issue, got %d: %v", len(got.Verdicts[0].Issues), got.Verdicts[0].Issues)
+	}
+	issue := got.Verdicts[0].Issues[0]
+	if !strings.HasPrefix(issue, "[kimi+glm] R6 Lambda") {
+		t.Fatalf("want [kimi+glm] prefix directly on the issue text, got %q", issue)
+	}
+	if strings.Contains(issue, "[claude]") {
+		t.Fatalf("echoed [claude] tag must be stripped, got %q", issue)
 	}
 }
 
@@ -285,14 +364,43 @@ func TestMerge_ThreeWayCluster(t *testing.T) {
 	}
 }
 
+// TestApplyLevel pins the preset expansion and its precedence rule: the
+// level fills only the knobs the caller didn't set explicitly.
+func TestApplyLevel(t *testing.T) {
+	// deep (the default) with untouched flags = today's defaults.
+	r, tm, e, err := applyLevel("deep", map[string]bool{}, defaultReviewers, 900, "")
+	if err != nil || r != defaultReviewers || tm != 900 || e != "xhigh" {
+		t.Fatalf("deep: got (%q, %d, %q, %v)", r, tm, e, err)
+	}
+	// light replaces unset knobs.
+	r, tm, e, err = applyLevel("light", map[string]bool{}, defaultReviewers, 900, "")
+	if err != nil || r != "claude,codex" || tm != 300 || e != "medium" {
+		t.Fatalf("light: got (%q, %d, %q, %v)", r, tm, e, err)
+	}
+	// medium preset.
+	r, tm, e, err = applyLevel("medium", map[string]bool{}, defaultReviewers, 900, "")
+	if err != nil || r != "claude,codex,agy,composer-2.5,grok-build" || tm != 600 || e != "high" {
+		t.Fatalf("medium: got (%q, %d, %q, %v)", r, tm, e, err)
+	}
+	// Explicitly-set flags beat the preset, knob by knob.
+	r, tm, e, err = applyLevel("light", map[string]bool{"reviewers": true, "timeout": true}, "glm", 120, "xhigh")
+	if err != nil || r != "glm" || tm != 120 || e != "xhigh" {
+		t.Fatalf("light+overrides: got (%q, %d, %q, %v)", r, tm, e, err)
+	}
+	// Unknown level is a loud error.
+	if _, _, _, err = applyLevel("ultra", map[string]bool{}, defaultReviewers, 900, ""); err == nil {
+		t.Fatal("unknown level must error")
+	}
+}
+
 func TestSelectReviewers_Default(t *testing.T) {
 	got, err := selectReviewers(defaultReviewers)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Default = claude + codex + agy + composer-2.5 + grok-build; the bare
-	// `agent` provider stays opt-in.
-	want := []string{"claude", "codex", "agy", "composer-2.5", "grok-build"}
+	// Default = the five frontier-family reviewers + the three open-weights
+	// families (kimi, glm, gpt-oss); the bare `agent` provider stays opt-in.
+	want := []string{"claude", "codex", "agy", "composer-2.5", "grok-build", "kimi", "glm", "gpt-oss"}
 	if len(got) != len(want) {
 		t.Fatalf("default should be %v, got %d items", want, len(got))
 	}
@@ -314,7 +422,7 @@ func TestSelectReviewers_CursorModels(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Both route through the Cursor `agent` CLI, pinned to distinct models.
-	want := map[string]string{"composer-2.5": "composer-2.5", "grok-build": "grok-build-0.1"}
+	want := map[string]string{"composer-2.5": "composer-2.5", "grok-build": "cursor-grok-4.5-high"}
 	if len(got) != len(want) {
 		t.Fatalf("want %d reviewers, got %d", len(want), len(got))
 	}
@@ -409,6 +517,75 @@ type errString string
 
 func (e errString) Error() string { return string(e) }
 
+// TestClassifyResult pins the salvage path: a reviewer that ran past its
+// timeout but still delivered a parseable verdict (the codex case — its
+// worker outlives the CLI kill and completes late) joins the merge instead
+// of being discarded, while an unparseable or absent output stays a skip
+// whose reason distinguishes no-output from persisted-but-unparsed.
+func TestClassifyResult(t *testing.T) {
+	valid := `{"summary":"some_fail","verdicts":[{"draft_id":"d","verdict":"FAIL","issues":["x"]}]}`
+	timeoutErr := errString("codex timed out after 7m0s (completed late; captured message delivered on stdout)")
+	// A typed ExitTimeout whose message carries NO timeout keyword — the
+	// typed code must drive the salvage branch, not the message text.
+	typedTimeoutErr := provider.NewError(provider.ExitTimeout, "reworded deadline error with no keyword")
+	cases := []struct {
+		name       string
+		raw        string
+		err        error
+		rawPath    string
+		wantParsed bool
+		wantSalv   bool
+		wantSkip   string
+		wantPErr   bool
+	}{
+		{"clean response", valid, nil, "/p/codex.txt", true, false, "", false},
+		{"clean garbage", "not json at all whatsoever", nil, "/p/x.txt", false, false, "", true},
+		{"timeout with late complete verdict", valid, timeoutErr, "/p/codex.txt", true, true, "", false},
+		{"typed timeout, reworded message", valid, typedTimeoutErr, "/p/codex.txt", true, true, "", false},
+		{"typed timeout, no output", "", typedTimeoutErr, "", false, false, "timed out (no output)", false},
+		{"timeout with unparsed output", "partial narra", timeoutErr, "/p/claude.txt", false, false, "timed out (unparsed output at /p/claude.txt)", false},
+		{"timeout with unparsed output, persist failed", "partial narra", timeoutErr, "", false, false, "timed out (unparsed output)", false},
+		{"timeout no output", "", timeoutErr, "", false, false, "timed out (no output)", false},
+		{"quota", "", errString("429 Too Many Requests"), "", false, false, "usage/quota limit", false},
+		{"genuine failure", "", errString("unexpected end of JSON input"), "", false, false, "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := classifyResult(tc.raw, tc.err, tc.rawPath)
+			if (c.parsed != nil) != tc.wantParsed {
+				t.Errorf("parsed = %v, want %v", c.parsed != nil, tc.wantParsed)
+			}
+			if c.salvaged != tc.wantSalv {
+				t.Errorf("salvaged = %v, want %v", c.salvaged, tc.wantSalv)
+			}
+			if c.skipReason != tc.wantSkip {
+				t.Errorf("skipReason = %q, want %q", c.skipReason, tc.wantSkip)
+			}
+			if c.parseError != tc.wantPErr {
+				t.Errorf("parseError = %v, want %v", c.parseError, tc.wantPErr)
+			}
+		})
+	}
+}
+
+func TestPersistRaw(t *testing.T) {
+	dir := t.TempDir() + "/audits/abc123"
+	p := persistRaw(dir, "codex", "the raw verdict")
+	if p == "" {
+		t.Fatal("persistRaw should return the written path")
+	}
+	b, err := os.ReadFile(p)
+	if err != nil || string(b) != "the raw verdict" {
+		t.Fatalf("read back %q, err %v", b, err)
+	}
+	if got := persistRaw(dir, "claude", ""); got != "" {
+		t.Errorf("empty raw should not write, got %q", got)
+	}
+	if got := persistRaw("", "claude", "x"); got != "" {
+		t.Errorf("empty dir should not write, got %q", got)
+	}
+}
+
 func TestParseIssue(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -496,5 +673,53 @@ func TestIssueOverlaps(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("issueOverlaps(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
 		}
+	}
+}
+
+// The 2026-07-17 mislabels: agy/claude returned long NARRATIVES with the verdict in a fenced
+// ```json block near the end; the old first-{-to-last-} span swallowed prose braces and
+// bucketed real PASSes as parse_error. These pin the candidate-based parse.
+func TestParseResponse_narrativeWithTrailingFencedVerdict(t *testing.T) {
+	body := "I traced each concern to ground truth.\n\n" +
+		"| Concern | Finding |\n|---|---|\n| tenant | `{ws.ID}` scoping clean |\n\n" +
+		"The guard `if cause instanceof ApiError && cause.status === 404 { return null }` holds.\n\n" +
+		"```json\n{\n  \"verdict\": \"pass\",\n  \"summary\": \"clean\",\n  \"findings\": [\n    {\"severity\": \"low\", \"file\": \"a.go\", \"description\": \"nit\"}\n  ]\n}\n```\n"
+	r, err := parseResponse(body)
+	if err != nil {
+		t.Fatalf("narrative+fenced verdict must parse, got: %v", err)
+	}
+	if len(r.Verdicts) != 1 || r.Verdicts[0].Verdict != "PASS" {
+		t.Fatalf("want one PASS verdict, got %+v", r.Verdicts)
+	}
+}
+
+func TestParseResponse_narrativeWithMultipleFencedBlocks(t *testing.T) {
+	// An earlier diff/code fence must not shadow the LAST (verdict) fence.
+	body := "Applied the patch:\n```diff\n+ if x { y() }\n```\nRan the suite — green.\n" +
+		"```json\n{\"verdict\":\"fail\",\"findings\":[\"real defect: {broken} handling\"]}\n```\nDone."
+	r, err := parseResponse(body)
+	if err != nil {
+		t.Fatalf("multi-fence narrative must parse, got: %v", err)
+	}
+	if len(r.Verdicts) != 1 || r.Verdicts[0].Verdict != "FAIL" {
+		t.Fatalf("want one FAIL verdict, got %+v", r.Verdicts)
+	}
+}
+
+func TestParseResponse_unfencedTrailingJSON(t *testing.T) {
+	body := "Summary of the review (no fence, prose braces like {this} earlier).\n\n" +
+		`{"verdict":"pass","findings":[]}`
+	r, err := parseResponse(body)
+	if err != nil {
+		t.Fatalf("unfenced trailing JSON must parse via the decoder walk, got: %v", err)
+	}
+	if len(r.Verdicts) != 1 || r.Verdicts[0].Verdict != "PASS" {
+		t.Fatalf("want one PASS verdict, got %+v", r.Verdicts)
+	}
+}
+
+func TestParseResponse_pureProseStillFailsLoud(t *testing.T) {
+	if _, err := parseResponse("I could not complete the review at all."); err == nil {
+		t.Fatal("prose with no verdict must stay a loud parse error (the false-green guard)")
 	}
 }

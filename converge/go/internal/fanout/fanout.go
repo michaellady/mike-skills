@@ -32,6 +32,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -198,14 +199,31 @@ var registeredReviewers = []reviewerSpec{
 	// (PATH check), and runProvider keys its thread temp-file on `name` (not
 	// p.Name(), which is "agent" for all three) so concurrent runs don't collide.
 	{name: "composer-2.5", cli: "agent", model: "composer-2.5", make: func() provider.Provider { return agent.New() }},
-	{name: "grok-build", cli: "agent", model: "grok-build-0.1", make: func() provider.Provider { return agent.New() }},
-	{name: "agy", cli: "agy", make: func() provider.Provider { return agy.New() }},
+	// grok-build-0.1 vanished from Cursor's roster (the 2026-07 dead-pin outage); the grok
+	// family now ships as cursor-grok-4.5-* — pin the highest-effort variant. The reviewer
+	// KEEPS the name "grok-build" so ledger history and the standing all-five rule read
+	// continuously.
+	{name: "grok-build", cli: "agent", model: "cursor-grok-4.5-high", make: func() provider.Provider { return agent.New() }},
+	// agy previously ran Antigravity's session default; pin the strongest Gemini it offers
+	// (`agy models`) so the fifth family reviews at full strength too.
+	{name: "agy", cli: "agy", model: "gemini-3.1-pro-high", make: func() provider.Provider { return agy.New() }},
+	// The top OPEN-WEIGHTS families on Cursor's roster (2026-07): Moonshot's Kimi and
+	// Zhipu's GLM, each pinned to its strongest listed variant. Open models fail in
+	// different ways than the frontier labs' — cheap extra diversity for the audit panel.
+	{name: "kimi", cli: "agent", model: "kimi-k2.7-code", make: func() provider.Provider { return agent.New() }},
+	{name: "glm", cli: "agent", model: "glm-5.2-max", make: func() provider.Provider { return agent.New() }},
+	// The third open-weights family: OpenAI's GPT-OSS 120B, served through the agy CLI
+	// (its only effort tier is Medium). Runs on agy like the gemini pin — the thread
+	// temp-file keys on the reviewer name, so concurrent agy-CLI reviewers don't collide.
+	{name: "gpt-oss", cli: "agy", model: "gpt-oss-120b-medium", make: func() provider.Provider { return agy.New() }},
 }
 
 // defaultReviewers is the comma-separated default for --reviewers.
 //
-// Default = claude + codex + agy + composer-2.5 + grok-build: independent agent
-// families catch different failure modes. composer-2.5 and grok-build run via
+// Default = claude + codex + agy + composer-2.5 + grok-build + kimi + glm +
+// gpt-oss: independent agent families catch different failure modes, and the
+// three open-weights families (Kimi, GLM, GPT-OSS) fail differently again
+// from the frontier labs. composer-2.5, grok-build, kimi, and glm run via
 // the Cursor `agent` CLI and need a paid Cursor plan — on a free/low-tier plan
 // they quota-fail and land under `skipped`, so including them by default is
 // safe (they simply don't contribute when unavailable). The bare `agent`
@@ -214,7 +232,49 @@ var registeredReviewers = []reviewerSpec{
 // Per-reviewer failures degrade gracefully: a reviewer that quota-fails,
 // auth-fails, or times out is reported under `skipped` (see unavailableReason),
 // NOT `parse_error` — so the remaining reviewers still produce a merged verdict.
-const defaultReviewers = "claude,codex,agy,composer-2.5,grok-build"
+const defaultReviewers = "claude,codex,agy,composer-2.5,grok-build,kimi,glm,gpt-oss"
+
+// levelPreset is what a --level expands to. CHOOSING a level is the caller's
+// judgment (see SKILL.md's guidance table — stakes and complexity of the
+// artifact); the preset table is just the canonical expansion so every caller
+// means the same thing by "light"/"medium"/"deep". Explicit --reviewers,
+// --timeout, and --effort flags override their preset field individually.
+type levelPreset struct {
+	reviewers string
+	effort    string // consumed by reviewers that support it (codex, claude)
+	timeoutS  int
+}
+
+// levelPresets scales review depth with artifact stakes. Latency scales
+// mostly with reviewer COUNT (the agent-CLI reviewers run serialized) and
+// timeout; effort scales cost/depth more than latency. Models stay top-tier
+// at every level (highest-by-default) so ledger comparisons across levels
+// measure depth, not model tier.
+var levelPresets = map[string]levelPreset{
+	"light":  {reviewers: "claude,codex", effort: "medium", timeoutS: 300},
+	"medium": {reviewers: "claude,codex,agy,composer-2.5,grok-build", effort: "high", timeoutS: 600},
+	"deep":   {reviewers: defaultReviewers, effort: "xhigh", timeoutS: 900},
+}
+
+// applyLevel resolves the effective reviewers/timeout/effort: the level's
+// preset fills any knob the caller didn't set explicitly (per the set map of
+// explicitly-passed flag names). Empty effort means the preset's effort.
+func applyLevel(level string, set map[string]bool, reviewersCSV string, timeoutSec int, effort string) (string, int, string, error) {
+	p, ok := levelPresets[level]
+	if !ok {
+		return "", 0, "", fmt.Errorf("unknown --level %q (levels: light, medium, deep)", level)
+	}
+	if !set["reviewers"] {
+		reviewersCSV = p.reviewers
+	}
+	if !set["timeout"] {
+		timeoutSec = p.timeoutS
+	}
+	if effort == "" {
+		effort = p.effort
+	}
+	return reviewersCSV, timeoutSec, effort, nil
+}
 
 // Run executes one audit fan-out. args are the `converge audit` subcommand
 // args (flags only). Returns the desired process exit code.
@@ -228,15 +288,35 @@ func Run(args []string) int {
 	var noLedger bool
 	var label string
 	var ledgerPath string
+	var level string
+	var effort string
 	fs.StringVar(&promptFile, "prompt-file", "", "path to prompt file; if empty, read from stdin")
-	fs.IntVar(&timeoutSec, "timeout", 300, "per-reviewer timeout (seconds)")
+	// 900s deep default: on real audit prompts (48-68KB), codex at max effort
+	// ran 400-700s and claude at xhigh exceeded 600s — a short default skips
+	// exactly the strongest reviewers (the salvage path recovers late
+	// completions, but only budget makes them on-time). agent-CLI reviewers
+	// are serialized; their clock starts when the reviewer actually starts,
+	// not while queued. Worst-case wall clock per reviewer is 2x this value
+	// (the post-timeout drain is bounded by one extra timeout).
+	fs.IntVar(&timeoutSec, "timeout", 900, "per-reviewer timeout in seconds, measured from when the reviewer starts (overrides the --level preset)")
 	fs.BoolVar(&quiet, "quiet", false, "suppress provider heartbeat lines on stderr")
 	fs.StringVar(&reviewersCSV, "reviewers", defaultReviewers,
-		"comma-separated reviewers to dispatch (registered: claude,codex,agent,composer-2.5,grok-build,agy)")
+		"comma-separated reviewers to dispatch (registered: claude,codex,agent,composer-2.5,grok-build,agy,kimi,glm,gpt-oss; overrides the --level preset)")
+	fs.StringVar(&level, "level", "deep",
+		"review depth preset: light|medium|deep — sets reviewers, effort, and timeout; explicit flags override individual knobs")
+	fs.StringVar(&effort, "effort", "",
+		"reasoning effort for reviewers that support it (codex, claude): low|medium|high|xhigh; empty = the --level preset's effort")
 	fs.BoolVar(&noLedger, "no-ledger", false, "do not record this audit to the SQLite ledger")
 	fs.StringVar(&label, "label", "", "label for the ledger audit row (defaults to the first draft id)")
 	fs.StringVar(&ledgerPath, "ledger", "", "ledger DB path (overrides CONVERGE_LEDGER for this run)")
 	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	setFlags := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { setFlags[f.Name] = true })
+	reviewersCSV, timeoutSec, effort, err := applyLevel(level, setFlags, reviewersCSV, timeoutSec, effort)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "audit: %v\n", err)
 		return 2
 	}
 
@@ -265,6 +345,15 @@ func Run(args []string) int {
 		Skipped:   map[string]string{},
 	}
 
+	// The audit id is generated up front (not inside recordLedger) so the raw
+	// per-reviewer output artifacts land in a directory named after the same
+	// id the ledger row carries.
+	auditID := ledger.NewAuditID()
+	artifactDir, adErr := ledger.ArtifactDir(auditID)
+	if adErr != nil {
+		artifactDir = "" // persistence disabled; the audit itself proceeds
+	}
+
 	type result struct {
 		name      string
 		out       string
@@ -284,7 +373,7 @@ func Run(args []string) int {
 		go func() {
 			defer wg.Done()
 			provStart := time.Now()
-			s, e := runProvider(r.name, r.make(), r.model, promptPath, timeoutSec, quiet)
+			s, e := runProvider(r.name, r.make(), r.model, promptPath, timeoutSec, effort, quiet)
 			resultsCh <- result{name: r.name, out: s, err: e, latencyMs: time.Since(provStart).Milliseconds()}
 		}()
 	}
@@ -293,33 +382,41 @@ func Run(args []string) int {
 
 	latencyByName := map[string]int64{}
 	parsed := map[string]*reviewerResp{}
+	wroteArtifacts := false
 	for res := range resultsCh {
 		latencyByName[res.name] = res.latencyMs
-		if res.err != nil {
-			// A reviewer dispatched but unable to produce a verdict for reasons
-			// outside the audit (quota, auth, timeout) is "skipped", not a
-			// malformed-output parse_error. Keeps the merged result honest.
-			if reason, ok := unavailableReason(res.err); ok {
-				out.Skipped[res.name] = reason
-			} else {
-				out.ParseError = append(out.ParseError, res.name)
+		raw := strings.TrimSpace(res.out)
+		rawPath := persistRaw(artifactDir, res.name, raw)
+		if rawPath != "" {
+			wroteArtifacts = true
+		}
+		c := classifyResult(raw, res.err, rawPath)
+		switch {
+		case c.parsed != nil:
+			parsed[res.name] = c.parsed
+			if c.salvaged && !quiet {
+				fmt.Fprintf(os.Stderr, "audit: [%s] completed after its timeout — verdict salvaged into the merge\n", res.name)
 			}
+		case c.skipReason != "":
+			out.Skipped[res.name] = c.skipReason
 			out.RawResponse += fmt.Sprintf("[%s error] %v\n", res.name, res.err)
-			continue
-		}
-		r, perr := parseResponse(res.out)
-		if perr != nil {
+		default: // parse error
 			out.ParseError = append(out.ParseError, res.name)
-			out.RawResponse += fmt.Sprintf("[%s raw]\n%s\n", res.name, res.out)
-			continue
+			if res.err != nil {
+				out.RawResponse += fmt.Sprintf("[%s error] %v\n", res.name, res.err)
+			} else {
+				out.RawResponse += fmt.Sprintf("[%s raw]\n%s\n", res.name, res.out)
+			}
 		}
-		parsed[res.name] = r
+	}
+	if wroteArtifacts && !quiet {
+		fmt.Fprintf(os.Stderr, "audit: raw reviewer outputs: %s\n", artifactDir)
 	}
 
 	if len(parsed) == 0 {
 		out.Summary = "parse_error"
 		out.Error = "no reviewers returned a usable verdict (all skipped, errored, or malformed JSON)"
-		recordLedger(out, parsed, selected, promptPath, label, noLedger, latencyByName, time.Since(start).Milliseconds())
+		recordLedger(auditID, level, out, parsed, selected, promptPath, label, noLedger, latencyByName, time.Since(start).Milliseconds())
 		printReviewerLine(out, parsed, selected, quiet)
 		emit(out)
 		return 2
@@ -337,10 +434,86 @@ func Run(args []string) int {
 	if len(out.Skipped) == 0 {
 		out.Skipped = nil
 	}
-	recordLedger(out, parsed, selected, promptPath, label, noLedger, latencyByName, time.Since(start).Milliseconds())
+	recordLedger(auditID, level, out, parsed, selected, promptPath, label, noLedger, latencyByName, time.Since(start).Milliseconds())
 	printReviewerLine(out, parsed, selected, quiet)
 	emit(out)
 	return 0
+}
+
+// classification is what one reviewer's run contributes to the merge:
+// exactly one of parsed (responded — possibly salvaged), skipReason
+// (skipped), or parseError is set.
+type classification struct {
+	parsed     *reviewerResp
+	skipReason string
+	parseError bool
+	salvaged   bool
+}
+
+// classifyResult decides a reviewer's fate from its raw output + run error.
+// The timeout branch is the salvage path: a reviewer can complete AFTER its
+// deadline but before the merge finalizes (the fan-out waits for every
+// provider to return, and e.g. codex's worker can outlive the CLI kill and
+// finish the turn late — providers deliver whatever they captured on stdout
+// alongside the timeout error). If that late output parses as a verdict it
+// joins the merge instead of being discarded; if it doesn't parse, the skip
+// reason points at the persisted raw file so the verdict stays manually
+// recoverable.
+func classifyResult(raw string, runErr error, rawPath string) classification {
+	if runErr == nil {
+		r, perr := parseResponse(raw)
+		if perr != nil {
+			return classification{parseError: true}
+		}
+		return classification{parsed: r}
+	}
+	// A reviewer dispatched but unable to produce a verdict for reasons
+	// outside the audit (quota, auth, timeout) is "skipped", not a
+	// malformed-output parse_error. Keeps the merged result honest.
+	reason, unavailable := unavailableReason(runErr)
+	// The typed ExitTimeout code is authoritative for the timeout branch —
+	// unavailableReason keyword-matches the message, and provider error texts
+	// drift; the salvage path must not silently die on a reworded error.
+	var pe *provider.Error
+	if errors.As(runErr, &pe) && pe.Code == provider.ExitTimeout {
+		reason, unavailable = "timed out", true
+	}
+	if !unavailable {
+		return classification{parseError: true}
+	}
+	if reason == "timed out" {
+		switch {
+		case raw == "":
+			return classification{skipReason: "timed out (no output)"}
+		default:
+			if r, perr := parseResponse(raw); perr == nil {
+				return classification{parsed: r, salvaged: true}
+			}
+			if rawPath != "" {
+				return classification{skipReason: fmt.Sprintf("timed out (unparsed output at %s)", rawPath)}
+			}
+			return classification{skipReason: "timed out (unparsed output)"}
+		}
+	}
+	return classification{skipReason: reason}
+}
+
+// persistRaw writes one reviewer's raw final output to <dir>/<reviewer>.txt,
+// creating dir on first use. Best-effort: returns the file path, or "" when
+// there was nothing to write or the write failed (the audit never fails over
+// artifact persistence).
+func persistRaw(dir, reviewer, raw string) string {
+	if dir == "" || raw == "" {
+		return ""
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return ""
+	}
+	path := filepath.Join(dir, reviewer+".txt")
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		return ""
+	}
+	return path
 }
 
 // issueRe parses a merged issue string of the form
@@ -356,16 +529,17 @@ var locRe = regexp.MustCompile(`\(([^()]*:\d+)\)\s*$`)
 // best-effort: any error is logged to stderr and otherwise ignored so the
 // audit's own exit code and stdout JSON are never affected. Skipped entirely
 // when noLedger is set.
-func recordLedger(out mergedResp, parsed map[string]*reviewerResp, selected []reviewerSpec, promptPath, label string, noLedger bool, latency map[string]int64, durationMs int64) {
+func recordLedger(auditID, level string, out mergedResp, parsed map[string]*reviewerResp, selected []reviewerSpec, promptPath, label string, noLedger bool, latency map[string]int64, durationMs int64) {
 	if noLedger {
 		return
 	}
 
 	rec := ledger.AuditRecord{
-		AuditID:            ledger.NewAuditID(),
+		AuditID:            auditID,
 		TS:                 time.Now().UTC().Format(time.RFC3339),
 		Label:              label,
 		Summary:            out.Summary,
+		Level:              level,
 		PromptSHA256:       promptSHA256(promptPath),
 		ReviewersRequested: selectedNames(selected),
 		DurationMs:         durationMs,
@@ -574,11 +748,12 @@ func lookCLI(name string) (string, bool) {
 	return p, true
 }
 
-func runProvider(name string, p provider.Provider, model string, promptPath string, timeoutSec int, quiet bool) (string, error) {
+func runProvider(name string, p provider.Provider, model string, promptPath string, timeoutSec int, effort string, quiet bool) (string, error) {
 	var buf strings.Builder
 	opts := provider.Options{
 		PromptFile: promptPath,
 		Model:      model,
+		Effort:     effort, // consumed by codex/claude; other providers ignore it
 		Timeout:    time.Duration(timeoutSec) * time.Second,
 		Quiet:      quiet,
 		Stdout:     &buf,
@@ -624,15 +799,83 @@ func unavailableReason(err error) (string, bool) {
 // tolerating markdown fences and surrounding prose.
 func parseResponse(s string) (*reviewerResp, error) {
 	s = strings.TrimSpace(s)
-	if strings.HasPrefix(s, "```") {
-		if i := strings.Index(s, "\n"); i >= 0 {
-			s = s[i+1:]
+	// Reviewers wrap the verdict three ways (the llm-output-untrusted-format lesson — decode
+	// defensively at every site):
+	//   1. The bare contract, possibly whole-body fenced (the original happy path).
+	//   2. A long NARRATIVE report with the verdict in a fenced ```json block near the END —
+	//      agy/claude did this on all of 2026-07-17's audits, and the old first-{-to-last-}
+	//      span swallowed prose braces from the narrative and mislabeled real PASSes as
+	//      parse_error. Fenced blocks are tried LAST-first (the verdict concludes the report).
+	//   3. Un-fenced trailing JSON in a narrative — a bounded decoder walk from the end.
+	for _, cand := range responseCandidates(s) {
+		if r, err := parseCandidate(cand); err == nil {
+			return r, nil
 		}
-		if j := strings.LastIndex(s, "```"); j >= 0 {
-			s = s[:j]
-		}
-		s = strings.TrimSpace(s)
 	}
+	return nil, fmt.Errorf("no candidate parsed as a verdict (whole body, %d fenced block(s), decoder walk) — off-schema reviewer output?", len(fencedBlocks(s)))
+}
+
+// responseCandidates yields candidate JSON texts in trust order: the whole (fence-stripped)
+// body, each fenced code block from last to first, then trailing decoder-walk objects.
+func responseCandidates(s string) []string {
+	var out []string
+	body := s
+	if strings.HasPrefix(body, "```") {
+		if i := strings.Index(body, "\n"); i >= 0 {
+			body = body[i+1:]
+		}
+		if j := strings.LastIndex(body, "```"); j >= 0 {
+			body = body[:j]
+		}
+		body = strings.TrimSpace(body)
+	}
+	out = append(out, body)
+	blocks := fencedBlocks(s)
+	for i := len(blocks) - 1; i >= 0; i-- {
+		out = append(out, blocks[i])
+	}
+	// Decoder walk: try to decode one JSON value at each of the last few '{' positions —
+	// catches an un-fenced trailing verdict without ever mixing prose into the span. Bounded
+	// so a huge transcript can't make this quadratic.
+	idx := strings.LastIndex(s, "{")
+	for tries := 0; idx >= 0 && tries < 50; tries++ {
+		var raw json.RawMessage
+		if json.NewDecoder(strings.NewReader(s[idx:])).Decode(&raw) == nil {
+			out = append(out, string(raw))
+		}
+		idx = strings.LastIndex(s[:idx], "{")
+	}
+	return out
+}
+
+// fencedBlocks returns the contents of every ``` fenced block in order.
+func fencedBlocks(s string) []string {
+	var blocks []string
+	for {
+		open := strings.Index(s, "```")
+		if open < 0 {
+			return blocks
+		}
+		rest := s[open+3:]
+		nl := strings.Index(rest, "\n")
+		if nl < 0 {
+			return blocks
+		}
+		rest = rest[nl+1:] // drop the info string ("json", "diff", …)
+		fin := strings.Index(rest, "```")
+		if fin < 0 {
+			return blocks
+		}
+		if b := strings.TrimSpace(rest[:fin]); b != "" {
+			blocks = append(blocks, b)
+		}
+		s = rest[fin+3:]
+	}
+}
+
+// parseCandidate applies the contract parse (wrapped shape, else the flat single-verdict
+// adaption) to one candidate text, using the outermost {…} span of that candidate only.
+func parseCandidate(s string) (*reviewerResp, error) {
 	start := strings.Index(s, "{")
 	end := strings.LastIndex(s, "}")
 	if start < 0 || end < 0 || end < start {
@@ -750,6 +993,17 @@ func merge(parsed map[string]*reviewerResp, selected []reviewerSpec) mergedResp 
 				s = &slot{perReviewer: map[string]*verdict{}}
 				slots[v.DraftID] = s
 			}
+			// LLM output is untrusted: a reviewer can emit the same draft_id
+			// twice. Combine with FAIL-OR and keep every issue — an
+			// unconditional overwrite would let a later PASS erase an earlier
+			// FAIL from the same reviewer (a false green).
+			if existing, dup := s.perReviewer[name]; dup {
+				if v.Verdict == "FAIL" {
+					existing.Verdict = "FAIL"
+				}
+				existing.Issues = append(existing.Issues, v.Issues...)
+				continue
+			}
 			s.perReviewer[name] = v
 		}
 	}
@@ -777,6 +1031,46 @@ func merge(parsed map[string]*reviewerResp, selected []reviewerSpec) mergedResp 
 	return out
 }
 
+// knownReviewerNames is the set of registered reviewer names, used to
+// recognize (and strip) echoed attribution tags in reviewer issue text.
+func knownReviewerNames() map[string]bool {
+	m := make(map[string]bool, len(registeredReviewers))
+	for _, r := range registeredReviewers {
+		m[strings.ToLower(r.name)] = true
+	}
+	return m
+}
+
+// stripReviewerTags removes leading "[name]" / "[a+b+...]" attribution tags
+// from an issue string when every name inside the bracket is a registered
+// reviewer. Reviewers sometimes echo an attribution prefix verbatim from
+// prompt context (e.g. a prior audit's merged findings quoted in the RULES or
+// source), which would nest a stale tag — possibly naming a reviewer that
+// didn't even respond — inside the merge's own "[r1+r2]" cluster prefix. The
+// cluster prefix must be the only attribution. Severity tags ("[high]",
+// "[CRITICAL]") are not reviewer names and are preserved. Loops so stacked
+// tags ("[claude] [codex] x") are fully stripped.
+func stripReviewerTags(issue string, known map[string]bool) string {
+	for {
+		s := strings.TrimSpace(issue)
+		if !strings.HasPrefix(s, "[") {
+			return s
+		}
+		end := strings.Index(s, "]")
+		if end < 0 {
+			return s
+		}
+		for _, n := range strings.Split(s[1:end], "+") {
+			// Case-insensitive: reviewers echo tags as "[Claude]"/"[CODEX]"
+			// as readily as lowercase.
+			if !known[strings.ToLower(strings.TrimSpace(n))] {
+				return s
+			}
+		}
+		issue = s[end+1:]
+	}
+}
+
 // clusterIssues collects every (reviewer, issue) pair, clusters overlapping
 // issues, and renders each cluster as "[r1+r2+...] <issue text>" in canonical
 // reviewer order.
@@ -800,13 +1094,16 @@ func clusterIssues(perReviewer map[string]*verdict, reviewerOrder []string) []st
 		})
 	}
 
+	known := knownReviewerNames()
 	for _, rn := range reviewerOrder {
 		v, ok := perReviewer[rn]
 		if !ok || v == nil {
 			continue
 		}
 		for _, issue := range v.Issues {
-			add(rn, issue)
+			if cleaned := stripReviewerTags(issue, known); cleaned != "" {
+				add(rn, cleaned)
+			}
 		}
 	}
 

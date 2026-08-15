@@ -42,6 +42,14 @@ type Provider interface {
 	// Run executes one critique call. On success the final assistant
 	// message is written to opts.Stdout. The captured session/thread id
 	// (when fresh, ResumeID == "") is written to opts.ThreadOut.
+	//
+	// On timeout (ExitTimeout), any output captured before/at the deadline —
+	// a late-but-complete final message or partial text — is still written
+	// to opts.Stdout before the error returns, so callers can salvage a
+	// finished verdict or persist the partial for manual recovery. The error
+	// message says which ("completed late" / "partial output" / "no output").
+	// On the completed-late path the session/thread id is persisted to
+	// opts.ThreadOut as on success, so a salvaged run keeps its resume handle.
 	Run(ctx context.Context, opts Options) error
 }
 

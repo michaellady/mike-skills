@@ -42,7 +42,9 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 		return provider.NewError(provider.ExitBadArgs, "agy CLI not on PATH")
 	}
 	if opts.Timeout == 0 {
-		opts.Timeout = 5 * time.Minute
+		// 15m, uniform with the other providers: a completed run returns
+		// immediately, so the generous ceiling is cheap.
+		opts.Timeout = 15 * time.Minute
 		if v := os.Getenv("CONVERGE_AGY_TIMEOUT"); v != "" {
 			if n, err := strconv.Atoi(v); err == nil {
 				opts.Timeout = time.Duration(n) * time.Second
@@ -76,12 +78,25 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 	// the response to stdout; --dangerously-skip-permissions avoids interactive
 	// tool-permission prompts that would otherwise block headless use.
 	args := []string{"--print", string(prompt), "--dangerously-skip-permissions"}
+	// Model selection: explicit opts.Model > $CONVERGE_AGY_MODEL > agy's own session
+	// default. The id form (e.g. "gemini-3.1-pro-high") is stable; `agy models` lists them.
+	model := opts.Model
+	if model == "" {
+		model = os.Getenv("CONVERGE_AGY_MODEL")
+	}
+	if model != "" {
+		args = append(args, "--model", model)
+	}
 
 	cctx, cancel := context.WithTimeout(ctx, opts.Timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(cctx, "agy", args...)
 	cmd.Stdin = nil
+	// Bounded post-timeout drain: cmd.Run waits for its I/O copiers, which a
+	// never-exiting worker holding the pipe would block forever. WaitDelay
+	// guarantees termination at ~2x the timeout.
+	cmd.WaitDelay = opts.Timeout
 
 	var outBuf, errBuf strings.Builder
 	cmd.Stdout = &outBuf
@@ -94,7 +109,13 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 	runErr := cmd.Run()
 
 	if cctx.Err() == context.DeadlineExceeded {
-		return provider.NewError(provider.ExitTimeout, "agy timed out after %s", opts.Timeout)
+		// Deliver whatever output was captured before the kill so the caller
+		// can salvage or persist it; the exit code still reports the deadline.
+		if partial := strings.TrimSpace(outBuf.String()); partial != "" {
+			_, _ = io.WriteString(opts.Stdout, partial)
+			return provider.NewError(provider.ExitTimeout, "agy timed out after %s (partial output delivered on stdout)", opts.Timeout)
+		}
+		return provider.NewError(provider.ExitTimeout, "agy timed out after %s (no output)", opts.Timeout)
 	}
 	if isAuthError(errBuf.String()) {
 		return provider.NewError(provider.ExitAuthError, "agy auth error — run `agy` once interactively to authenticate")
