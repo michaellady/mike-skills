@@ -233,13 +233,34 @@ var registeredReviewers = []reviewerSpec{
 // NOT `parse_error` — so the remaining reviewers still produce a merged verdict.
 const defaultReviewers = "claude,codex,agy,composer-2.5,grok-build,kimi,glm,gpt-oss"
 
+// result is one reviewer's dispatch outcome, carried from its goroutine to the
+// collector. Shared by the fresh run and the --resume re-dispatch.
+type result struct {
+	name      string
+	out       string
+	err       error
+	latencyMs int64
+}
+
 // Run executes one audit fan-out. args are the `converge audit` subcommand
 // args (flags only). Returns the desired process exit code.
+//
+// Before the normal flag block a small pre-parse peels off the resumable /
+// recoverable MODE flags — `--resume <run-id>`, `--recover <run-id>`,
+// `--list-runs` — and routes to their handlers; everything else is a fresh run.
+// All existing flags keep working for every mode.
 func Run(args []string) int {
+	mode, modeID, rest, perr := preparseMode(args)
+	if perr != nil {
+		fmt.Fprintf(os.Stderr, "audit: %v\n", perr)
+		return 2
+	}
+
 	start := time.Now()
 	fs := flag.NewFlagSet("audit", flag.ContinueOnError)
 	var promptFile string
 	var timeoutSec int
+	var deadlineSec int
 	var quiet bool
 	var reviewersCSV string
 	var noLedger bool
@@ -247,13 +268,15 @@ func Run(args []string) int {
 	var ledgerPath string
 	fs.StringVar(&promptFile, "prompt-file", "", "path to prompt file; if empty, read from stdin")
 	fs.IntVar(&timeoutSec, "timeout", 300, "per-reviewer timeout (seconds)")
+	fs.IntVar(&deadlineSec, "deadline", 0,
+		"wall-clock budget (seconds) for the whole fan-out; 0 = wait for every reviewer (each still bounded by --timeout). When >0, reviewers still running at the deadline are marked skipped(timeout) and a PARTIAL merge is emitted before any outer wall-clock kill. Keep it below the caller's budget, and keep --timeout below --deadline.")
 	fs.BoolVar(&quiet, "quiet", false, "suppress provider heartbeat lines on stderr")
 	fs.StringVar(&reviewersCSV, "reviewers", defaultReviewers,
-		"comma-separated reviewers to dispatch (registered: claude,codex,agent,composer-2.5,grok-build,agy)")
+		"comma-separated reviewers to dispatch (registered: claude,codex,agent,composer-2.5,grok-build,agy,kimi,glm,gpt-oss)")
 	fs.BoolVar(&noLedger, "no-ledger", false, "do not record this audit to the SQLite ledger")
 	fs.StringVar(&label, "label", "", "label for the ledger audit row (defaults to the first draft id)")
 	fs.StringVar(&ledgerPath, "ledger", "", "ledger DB path (overrides CONVERGE_LEDGER for this run)")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(rest); err != nil {
 		return 2
 	}
 
@@ -263,6 +286,18 @@ func Run(args []string) int {
 		_ = os.Setenv("CONVERGE_LEDGER", ledgerPath)
 	}
 
+	// Resumable / recoverable modes reconstruct from the run dir; they use the
+	// original run's reviewer set (meta.json), not --reviewers.
+	switch mode {
+	case modeListRuns:
+		return listRuns(os.Stdout)
+	case modeResume:
+		return resumeRun(modeID, resumeOpts{timeoutSec: timeoutSec, deadlineSec: deadlineSec, quiet: quiet, noLedger: noLedger, label: label, start: start})
+	case modeRecover:
+		return recoverRun(modeID, recoverOpts{quiet: quiet, noLedger: noLedger, label: label, start: start})
+	}
+
+	// ---- fresh run ----
 	selected, err := selectReviewers(reviewersCSV)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "audit: %v\n", err)
@@ -276,75 +311,160 @@ func Run(args []string) int {
 	}
 	defer cleanup()
 
-	out := mergedResp{
+	// Durable per-run persistence: run-id == ledger audit_id. Create the run dir
+	// and write meta.json BEFORE dispatching, so a wall-clock kill at any point
+	// leaves a resumable/recoverable record on disk.
+	runID := ledger.NewAuditID()
+	runDir, derr := prepareRunDir(runID, selected, promptPath, timeoutSec, deadlineSec)
+	if derr != nil {
+		// Persistence is load-bearing, but a run dir failure must not abort the
+		// audit itself — degrade to in-memory (no resume/recover for this run).
+		fmt.Fprintf(os.Stderr, "audit: run dir unavailable (resume/recover disabled): %v\n", derr)
+		runDir = ""
+	}
+	fmt.Fprintf(os.Stderr, "run-id: %s\n", runID)
+
+	out := freshOut()
+	parsed := map[string]*reviewerResp{}
+	latency := map[string]int64{}
+	doneCh := dispatchAndCollect(selected, runDir, promptPath, timeoutSec, deadlineSec, quiet, out, parsed, latency)
+	code := finalize(runID, out, parsed, selected, promptPath, label, noLedger, latency, start, quiet)
+	// Emit already happened inside finalize (before any outer kill). Give any
+	// straggler goroutines a brief grace to finish persisting their files so a
+	// later --resume sees them; bounded so we never hang.
+	waitGrace(doneCh)
+	return code
+}
+
+// freshOut returns an empty merged response with the maps/slices initialized.
+func freshOut() *mergedResp {
+	return &mergedResp{
 		Verdicts:  []verdict{},
 		Reviewers: []string{},
 		Skipped:   map[string]string{},
 	}
+}
 
-	type result struct {
-		name      string
-		out       string
-		err       error
-		latencyMs int64
+// dispatchAndCollect fans `toRun` out in parallel, persisting each reviewer's
+// output the instant it returns, and collects results into out/parsed/latency.
+// It honors a wall-clock deadline (deadlineSec>0): reviewers that have not
+// reported by the deadline are marked skipped(timeout) and left running (their
+// processes are killed via the shared deadline context; their persistence still
+// lands for a later --resume). Returns a channel closed once every dispatched
+// goroutine has finished (used by the caller for a bounded post-emit grace).
+func dispatchAndCollect(toRun []reviewerSpec, runDir, promptPath string, timeoutSec, deadlineSec int, quiet bool, out *mergedResp, parsed map[string]*reviewerResp, latency map[string]int64) <-chan struct{} {
+	ctx := context.Background()
+	if deadlineSec > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(deadlineSec)*time.Second)
+		// cancel is invoked when the process exits; the deadline itself fires the
+		// kill. Retain it on a package-less closure so vet stays happy.
+		defer cancel()
 	}
-	resultsCh := make(chan result, len(selected))
-	var wg sync.WaitGroup
 
-	for _, r := range selected {
+	resultsCh := make(chan result, len(toRun))
+	var wg sync.WaitGroup
+	dispatched := []string{}
+	for _, r := range toRun {
 		if _, ok := lookCLI(r.cli); !ok {
 			out.Skipped[r.name] = fmt.Sprintf("%s CLI not on PATH", r.cli)
 			continue
 		}
 		wg.Add(1)
 		r := r
+		dispatched = append(dispatched, r.name)
 		go func() {
 			defer wg.Done()
 			provStart := time.Now()
-			s, e := runProvider(r.name, r.make(), r.model, promptPath, timeoutSec, quiet)
+			s, e := runProvider(ctx, r.name, r.make(), r.model, promptPath, timeoutSec, quiet, runDir)
+			// Buffered channel (cap == len(toRun) >= #goroutines) so this send
+			// NEVER blocks — even a straggler that finishes after the collector
+			// has moved on lands its result without leaking the goroutine.
 			resultsCh <- result{name: r.name, out: s, err: e, latencyMs: time.Since(provStart).Milliseconds()}
 		}()
 	}
-	wg.Wait()
-	close(resultsCh)
 
-	latencyByName := map[string]int64{}
-	parsed := map[string]*reviewerResp{}
-	for res := range resultsCh {
-		latencyByName[res.name] = res.latencyMs
-		if res.err != nil {
-			// A reviewer dispatched but unable to produce a verdict for reasons
-			// outside the audit (quota, auth, timeout) is "skipped", not a
-			// malformed-output parse_error. Keeps the merged result honest.
-			if reason, ok := unavailableReason(res.err); ok {
-				out.Skipped[res.name] = reason
-			} else {
-				out.ParseError = append(out.ParseError, res.name)
-			}
-			out.RawResponse += fmt.Sprintf("[%s error] %v\n", res.name, res.err)
-			continue
-		}
-		r, perr := parseResponse(res.out)
-		if perr != nil {
-			out.ParseError = append(out.ParseError, res.name)
-			out.RawResponse += fmt.Sprintf("[%s raw]\n%s\n", res.name, res.out)
-			continue
-		}
-		parsed[res.name] = r
+	doneCh := make(chan struct{})
+	go func() { wg.Wait(); close(doneCh) }()
+
+	var deadlineCh <-chan time.Time
+	if deadlineSec > 0 {
+		t := time.NewTimer(time.Duration(deadlineSec) * time.Second)
+		defer t.Stop()
+		deadlineCh = t.C
 	}
 
+	received := map[string]bool{}
+	n := len(dispatched)
+collect:
+	for i := 0; i < n; i++ {
+		select {
+		case res := <-resultsCh:
+			received[res.name] = true
+			ingest(res, out, parsed, latency)
+		case <-deadlineCh:
+			break collect
+		}
+	}
+	for _, name := range dispatched {
+		if !received[name] {
+			out.Skipped[name] = "timed out (deadline)"
+		}
+	}
+	return doneCh
+}
+
+// ingest classifies one reviewer result into the merged output. A dispatched
+// reviewer that errored for reasons outside the audit (quota/auth/timeout) is
+// skipped, not a parse_error; malformed JSON is a loud parse_error.
+func ingest(res result, out *mergedResp, parsed map[string]*reviewerResp, latency map[string]int64) {
+	latency[res.name] = res.latencyMs
+	if res.err != nil {
+		if reason, ok := unavailableReason(res.err); ok {
+			out.Skipped[res.name] = reason
+		} else {
+			out.ParseError = append(out.ParseError, res.name)
+		}
+		out.RawResponse += fmt.Sprintf("[%s error] %v\n", res.name, res.err)
+		return
+	}
+	r, perr := parseResponse(res.out)
+	if perr != nil {
+		out.ParseError = append(out.ParseError, res.name)
+		out.RawResponse += fmt.Sprintf("[%s raw]\n%s\n", res.name, res.out)
+		return
+	}
+	parsed[res.name] = r
+}
+
+// waitGrace lets straggler goroutines finish persisting after the emit, bounded
+// so the process never hangs past the merge.
+func waitGrace(doneCh <-chan struct{}) {
+	select {
+	case <-doneCh:
+	case <-time.After(2 * time.Second):
+	}
+}
+
+// finalize is the shared merge tail: FAIL-OR merge, [r1+r2] attribution, skipped
+// degradation, the per-reviewer stderr ground-truth line, the ledger row, and
+// the canonical JSON emit. Fresh, --resume, and --recover all funnel through it
+// so the merge semantics are identical regardless of how `parsed` was assembled.
+// runID is used as the ledger audit_id (== the run-id).
+func finalize(runID string, out *mergedResp, parsed map[string]*reviewerResp, selected []reviewerSpec, promptPath, label string, noLedger bool, latency map[string]int64, start time.Time, quiet bool) int {
 	if len(parsed) == 0 {
 		out.Summary = "parse_error"
 		out.Error = "no reviewers returned a usable verdict (all skipped, errored, or malformed JSON)"
-		recordLedger(out, parsed, selected, promptPath, label, noLedger, latencyByName, time.Since(start).Milliseconds())
-		printReviewerLine(out, parsed, selected, quiet)
-		emit(out)
+		recordLedger(runID, *out, parsed, selected, promptPath, label, noLedger, latency, time.Since(start).Milliseconds())
+		printReviewerLine(*out, parsed, selected, quiet)
+		emit(*out)
 		return 2
 	}
 
 	merged := merge(parsed, selected)
 	out.Summary = merged.Summary
 	out.Verdicts = merged.Verdicts
+	out.Reviewers = out.Reviewers[:0]
 	for _, r := range selected {
 		if _, ok := parsed[r.name]; ok {
 			out.Reviewers = append(out.Reviewers, r.name)
@@ -354,9 +474,9 @@ func Run(args []string) int {
 	if len(out.Skipped) == 0 {
 		out.Skipped = nil
 	}
-	recordLedger(out, parsed, selected, promptPath, label, noLedger, latencyByName, time.Since(start).Milliseconds())
-	printReviewerLine(out, parsed, selected, quiet)
-	emit(out)
+	recordLedger(runID, *out, parsed, selected, promptPath, label, noLedger, latency, time.Since(start).Milliseconds())
+	printReviewerLine(*out, parsed, selected, quiet)
+	emit(*out)
 	return 0
 }
 
@@ -373,13 +493,15 @@ var locRe = regexp.MustCompile(`\(([^()]*:\d+)\)\s*$`)
 // best-effort: any error is logged to stderr and otherwise ignored so the
 // audit's own exit code and stdout JSON are never affected. Skipped entirely
 // when noLedger is set.
-func recordLedger(out mergedResp, parsed map[string]*reviewerResp, selected []reviewerSpec, promptPath, label string, noLedger bool, latency map[string]int64, durationMs int64) {
+func recordLedger(runID string, out mergedResp, parsed map[string]*reviewerResp, selected []reviewerSpec, promptPath, label string, noLedger bool, latency map[string]int64, durationMs int64) {
 	if noLedger {
 		return
 	}
 
 	rec := ledger.AuditRecord{
-		AuditID:            ledger.NewAuditID(),
+		// audit_id == the run-id, so the ledger row and the run dir share one
+		// identity; a --resume/--recover re-Record under the same id updates it.
+		AuditID:            runID,
 		TS:                 time.Now().UTC().Format(time.RFC3339),
 		Label:              label,
 		Summary:            out.Summary,
@@ -591,8 +713,17 @@ func lookCLI(name string) (string, bool) {
 	return p, true
 }
 
-func runProvider(name string, p provider.Provider, model string, promptPath string, timeoutSec int, quiet bool) (string, error) {
+func runProvider(ctx context.Context, name string, p provider.Provider, model string, promptPath string, timeoutSec int, quiet bool, runDir string) (string, error) {
 	var buf strings.Builder
+	// When a run dir exists, repoint ThreadOut at <run-dir>/<name>.session so the
+	// reviewer's session/thread id is captured durably (claude/codex write it);
+	// otherwise fall back to a per-name temp file. Keyed on the reviewer's
+	// registry name, NOT p.Name() (agent / composer-2.5 / grok-build / kimi / glm
+	// all return "agent", so p.Name() would collide across concurrent runs).
+	threadOut := filepath.Join(os.TempDir(), fmt.Sprintf("converge-audit-%s-%d.thread", name, os.Getpid()))
+	if runDir != "" {
+		threadOut = filepath.Join(runDir, name+".session")
+	}
 	opts := provider.Options{
 		PromptFile: promptPath,
 		Model:      model,
@@ -600,12 +731,19 @@ func runProvider(name string, p provider.Provider, model string, promptPath stri
 		Quiet:      quiet,
 		Stdout:     &buf,
 		Stderr:     os.Stderr,
-		// Key the thread temp-file on the reviewer's registry name, NOT
-		// p.Name(): agent / composer-2.5 / grok-build all return "agent", so
-		// using p.Name() would collide when several run concurrently.
-		ThreadOut: filepath.Join(os.TempDir(), fmt.Sprintf("converge-audit-%s-%d.thread", name, os.Getpid())),
+		ThreadOut:  threadOut,
 	}
-	err := p.Run(context.Background(), opts)
+	err := p.Run(ctx, opts)
+
+	// Persist the INSTANT p.Run returns — before the goroutine's channel send,
+	// before wg.Wait() can return, before any merge. This is the whole point of
+	// the augmentation: a finished reviewer's verdict survives a later kill.
+	if runDir != "" {
+		_ = os.WriteFile(filepath.Join(runDir, name+".json"), []byte(buf.String()), 0o644)
+		if err != nil {
+			_ = os.WriteFile(filepath.Join(runDir, name+".err"), []byte(err.Error()), 0o644)
+		}
+	}
 	return buf.String(), err
 }
 

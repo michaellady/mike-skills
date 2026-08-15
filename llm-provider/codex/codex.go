@@ -113,6 +113,9 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 
 	cmd := exec.CommandContext(cctx, "codex", args...)
 	cmd.Stdin = nil
+	// Kill codex's whole process group (not just the direct pid) on cancellation,
+	// and bound cmd.Wait() so a straggler can't orphan past the fan-out's merge.
+	harden(cmd)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
