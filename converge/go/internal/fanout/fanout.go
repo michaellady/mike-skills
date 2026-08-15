@@ -926,6 +926,17 @@ func merge(parsed map[string]*reviewerResp, selected []reviewerSpec) mergedResp 
 				s = &slot{perReviewer: map[string]*verdict{}}
 				slots[v.DraftID] = s
 			}
+			// LLM output is untrusted: a reviewer can emit the same draft_id
+			// twice. Combine with FAIL-OR and keep every issue — an
+			// unconditional overwrite would let a later PASS erase an earlier
+			// FAIL from the same reviewer (a false green).
+			if existing, dup := s.perReviewer[name]; dup {
+				if v.Verdict == "FAIL" {
+					existing.Verdict = "FAIL"
+				}
+				existing.Issues = append(existing.Issues, v.Issues...)
+				continue
+			}
 			s.perReviewer[name] = v
 		}
 	}

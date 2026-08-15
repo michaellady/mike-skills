@@ -248,6 +248,29 @@ func TestMerge_DedupOverlap(t *testing.T) {
 	}
 }
 
+// TestMerge_DuplicateDraftFromOneReviewer: LLM output is untrusted — a
+// reviewer can emit the same draft_id twice. The later entry must combine
+// FAIL-OR with the earlier one (issues kept), not overwrite it: FAIL then
+// PASS stays FAIL. (Adversarial-review finding on the salvage patch.)
+func TestMerge_DuplicateDraftFromOneReviewer(t *testing.T) {
+	parsed := map[string]*reviewerResp{
+		"claude": {Verdicts: []verdict{
+			{DraftID: "a", Verdict: "FAIL", Issues: []string{"a real problem, found early"}},
+			{DraftID: "a", Verdict: "PASS", Issues: []string{}},
+		}},
+	}
+	got := merge(parsed, selectedFor("claude"))
+	if got.Summary != "some_fail" {
+		t.Fatalf("duplicate PASS must not erase the FAIL: summary = %s", got.Summary)
+	}
+	if len(got.Verdicts) != 1 || got.Verdicts[0].Verdict != "FAIL" {
+		t.Fatalf("want one FAIL verdict, got %#v", got.Verdicts)
+	}
+	if len(got.Verdicts[0].Issues) != 1 || !strings.Contains(got.Verdicts[0].Issues[0], "a real problem") {
+		t.Fatalf("the FAIL's issue must survive the duplicate: %v", got.Verdicts[0].Issues)
+	}
+}
+
 func TestMerge_OnlyClaude(t *testing.T) {
 	parsed := map[string]*reviewerResp{
 		"claude": {Verdicts: []verdict{
