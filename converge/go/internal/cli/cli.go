@@ -125,11 +125,27 @@ LLM transport (codex, claude, agent, or agy)
                                          Alias for llm-critique --provider claude.
 
 Adversarial audit (fresh-eyes fan-out — the folded adversarial-review)
-  audit [--reviewers claude,codex,agy,composer-2.5,grok-build] [--prompt-file <p>] [--timeout <s>]
-        [--quiet]                        Fan the SAME composed prompt out to all
+  audit [--reviewers claude,codex,agy,composer-2.5,grok-build,kimi,glm,gpt-oss]
+        [--prompt-file <p>] [--timeout <s>] [--deadline <s>] [--quiet]
+                                         Fan the SAME composed prompt out to all
                                          reviewers in parallel, FAIL-OR merge,
                                          emit canonical {summary,verdicts,...}
                                          JSON. Prompt from --prompt-file or stdin.
+                                         Prints "run-id: <id>" to stderr and
+                                         persists every reviewer's output under
+                                         $CONVERGE_RUNS_DIR/<run-id>/ so a kill
+                                         is recoverable. --deadline <s> caps the
+                                         wall clock: stragglers become
+                                         skipped(timeout) and a PARTIAL merge is
+                                         emitted before any outer kill.
+  audit --resume <run-id>                Re-dispatch ONLY the run's missing/failed
+                                         reviewers, merge the union (idempotent).
+  audit --recover <run-id>               Salvage a run WITHOUT re-running: read
+                                         persisted verdicts, else reconstruct from
+                                         each reviewer's own CLI transcript
+                                         (agy is non-recoverable → skipped).
+  audit --list-runs                      List persisted runs newest-first with
+                                         per-run completeness.
 
 Ledger (SQLite audit history for model comparison)
   ledger stats                           Per-model table: audits participated,
@@ -154,7 +170,7 @@ Env vars: CONVERGE_CODEX_TIMEOUT, CONVERGE_CLAUDE_TIMEOUT, CONVERGE_CLAUDE_MODEL
 CONVERGE_QUIET, CONVERGE_HEARTBEAT_S, CONVERGE_THREAD_OUT, CONVERGE_DIFF_MAX_BYTES,
 CONVERGE_REQUIRE_EVIDENCE, CONVERGE_SCHEMA, CONVERGE_PROMPTS_DIR,
 CONVERGE_STATUS_DIR, CONVERGE_ACTIVE_PLAN, CONVERGE_SMOKE_BUILD,
-CONVERGE_SMOKE_TEST, CLAUDE_PLANS_DIR, CODEX_HOME.
+CONVERGE_SMOKE_TEST, CONVERGE_LEDGER, CONVERGE_RUNS_DIR, CLAUDE_PLANS_DIR, CODEX_HOME.
 `)
 }
 

@@ -191,6 +191,20 @@ func Record(rec AuditRecord) error {
 	}
 	rollback := func() { _ = tx.Rollback() }
 
+	// Idempotent by audit_id: a resume/recover run re-Records under the SAME
+	// audit_id (== the run-id) once the merge is reconstructed, so clear any
+	// prior rows for this audit first. On a fresh run there is nothing to delete.
+	for _, del := range []string{
+		`DELETE FROM audits WHERE audit_id = ?`,
+		`DELETE FROM reviews WHERE audit_id = ?`,
+		`DELETE FROM findings WHERE audit_id = ?`,
+	} {
+		if _, err := tx.Exec(del, rec.AuditID); err != nil {
+			rollback()
+			return fmt.Errorf("clear prior audit rows: %w", err)
+		}
+	}
+
 	if _, err := tx.Exec(
 		`INSERT INTO audits(audit_id, ts, label, summary, prompt_sha256, reviewers_requested, duration_ms)
 		 VALUES(?, ?, ?, ?, ?, ?, ?)`,

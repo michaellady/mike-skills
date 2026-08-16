@@ -113,6 +113,9 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 
 	cmd := exec.CommandContext(cctx, "codex", args...)
 	cmd.Stdin = nil
+	// Kill codex's whole process group (not just the direct pid) on cancellation,
+	// and bound cmd.Wait() so a straggler can't orphan past the fan-out's merge.
+	harden(cmd)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -125,7 +128,7 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 		return provider.NewError(provider.ExitBadArgs, "start codex: %v", err)
 	}
 
-	final, threadID := streamFilter(stdout, opts)
+	final, threadID, streamErr := streamFilter(stdout, opts)
 
 	waitErr := cmd.Wait()
 
@@ -136,8 +139,14 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 		return provider.NewError(provider.ExitAuthError, "codex auth error — run `codex login`")
 	}
 	if final == "" {
+		// The REAL cause usually rides the JSONL stream as error/turn.failed events (e.g. the
+		// 2026-07-17 outage: the configured model required a newer CLI, the API 400'd every
+		// turn, and seven audits reported only this generic line + an unrelated stdin note).
+		// Surface the stream error FIRST; stderr is the fallback.
 		msg := "no final assistant message in JSONL stream"
-		if errBuf.Len() > 0 {
+		if streamErr != "" {
+			msg += " (stream error: " + trim(streamErr, 500) + ")"
+		} else if errBuf.Len() > 0 {
 			tail := errBuf.String()
 			if len(tail) > 500 {
 				tail = tail[:500]
@@ -159,7 +168,7 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 	return nil
 }
 
-func streamFilter(r io.Reader, opts provider.Options) (final, threadID string) {
+func streamFilter(r io.Reader, opts provider.Options) (final, threadID, streamErr string) {
 	start := time.Now()
 	lastLog := start
 	scanner := bufio.NewScanner(r)
@@ -241,6 +250,15 @@ func streamFilter(r io.Reader, opts provider.Options) (final, threadID string) {
 			}
 		case ev.Type == "turn.completed" || ev.Type == "thread.completed":
 			logf("turn complete")
+		case ev.Type == "error" || ev.Type == "turn.failed":
+			// Keep the LAST error event — this is the real diagnosis when no assistant
+			// message ever lands (API rejections, model/CLI mismatches, quota errors).
+			if ev.Error.Message != "" {
+				streamErr = ev.Error.Message
+			} else if ev.Message != "" {
+				streamErr = ev.Message
+			}
+			logf("stream error: %s", trim(streamErr, 120))
 		}
 		lastLog = time.Now()
 	}
@@ -249,14 +267,18 @@ func streamFilter(r io.Reader, opts provider.Options) (final, threadID string) {
 	} else {
 		logf("done (final message: %d chars)", len(final))
 	}
-	return final, threadID
+	return final, threadID, streamErr
 }
 
 type event struct {
 	Type     string `json:"type"`
 	ThreadID string `json:"thread_id,omitempty"`
 	Text     string `json:"text,omitempty"`
-	Item     struct {
+	Message  string `json:"message,omitempty"` // {"type":"error","message":...}
+	Error    struct {
+		Message string `json:"message"`
+	} `json:"error,omitempty"` // {"type":"turn.failed","error":{"message":...}}
+	Item struct {
 		ItemType  string `json:"type"`
 		Text      string `json:"text"`
 		Summary   string `json:"summary"`
