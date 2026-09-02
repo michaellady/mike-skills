@@ -4,7 +4,7 @@ XML blocks composed into the per-mode templates in this directory. Cherry-picked
 
 Wrap each block in the XML tag shown in its heading. Tags must be stable so each reviewer can rely on the structure across rounds.
 
-**Author-neutral templates (post-fold):** the converge per-mode templates are now author-neutral so the *same* template serves claude, codex, and agy. Render with `{{REVIEWER_NAME}}` / `{{AUTHOR}}` (in `<role>` / `<structured_output_contract>`), `{{ID_PREFIX}}` (C=claude, K=codex, A=agy), and `{{PRIOR_CRITIQUES}}` (the other reviewers' critiques this round). The renderer (`bin/converge render-prompt KEY=val ...`) accepts arbitrary placeholders, so one block serves any reviewer when filled in at call time. The example snippets below still show the literal `codex` for illustration.
+**Author-neutral templates (post-fold):** the converge per-mode templates are now author-neutral so the *same* template serves every non-claude reviewer. Render with `{{REVIEWER_NAME}}` / `{{AUTHOR}}` (in `<role>` / `<structured_output_contract>`), `{{ID_PREFIX}}` (C=claude, S=muse, K=codex, A=agy, M=composer-2.5, G=grok-build), and `{{PRIOR_CRITIQUES}}` (the other reviewers' critiques this round). The renderer (`bin/converge render-prompt KEY=val ...`) accepts arbitrary placeholders, so one block serves any reviewer when filled in at call time. The example snippets below still show the literal `codex` for illustration.
 
 ---
 

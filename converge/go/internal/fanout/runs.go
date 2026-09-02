@@ -10,7 +10,9 @@
 //	prompt.txt       the composed prompt (durable copy for re-dispatch)
 //	<name>.json      the reviewer's raw stdout (the verdict, pre-parse)
 //	<name>.err       the reviewer's error text, when it failed
-//	<name>.session   the reviewer's session/thread id (claude/codex only)
+//	<name>.session   the reviewer's session/thread id (claude/codex/muse;
+//	                  muse records the id but has no headless transcript
+//	                  reader, so it recovers like agy)
 //
 // This makes a wall-clock kill non-destructive:
 //
@@ -19,7 +21,8 @@
 //   - `audit --recover <run-id>` salvages WITHOUT re-running: it reads each
 //     <name>.json, and for a reviewer with no usable file it locates that
 //     reviewer's OWN CLI transcript (claude/codex/cursor) and extracts the final
-//     assistant message. agy writes no transcript, so it is non-recoverable.
+//     assistant message. agy writes no transcript, and muse has no headless
+//     transcript reader, so both are non-recoverable (resumable via --resume).
 //   - `audit --list-runs`        enumerates the run dirs newest-first with
 //     per-run completeness.
 package fanout
@@ -258,7 +261,8 @@ type recoverOpts struct {
 // recoverRun salvages <run-id> WITHOUT re-running any reviewer. Per reviewer:
 // use the persisted <name>.json if it parses; else (for claude/codex/cursor)
 // locate the reviewer's own CLI transcript and extract its final assistant
-// message; agy writes no transcript so it degrades to skipped; anything else
+// message; agy writes no transcript and muse has no headless transcript
+// reader, so both degrade to skipped; anything else
 // unreconstructable is skipped(unrecoverable).
 func recoverRun(runID string, o recoverOpts) int {
 	dir := runDirFor(runID)
@@ -292,9 +296,11 @@ func recoverRun(runID string, o recoverOpts) int {
 			parsed[r.name] = resp
 			continue
 		}
-		// 2. agy writes no transcript of its own — intrinsically non-recoverable.
-		if r.cli == "agy" {
-			out.Skipped[r.name] = "no transcript — agy non-recoverable"
+		// 2. agy writes no transcript of its own, and muse has no headless
+		// transcript reader (`muse resume` is interactive) — both are
+		// intrinsically non-recoverable; use --resume to re-run them.
+		if r.cli == "agy" || r.cli == "muse" {
+			out.Skipped[r.name] = fmt.Sprintf("no transcript — %s non-recoverable", r.cli)
 			continue
 		}
 		// 3. The reviewer's own CLI transcript.

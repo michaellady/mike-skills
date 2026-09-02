@@ -1,5 +1,6 @@
 // Package fanout dispatches the SAME prompt to every selected reviewer CLI in
-// parallel (claude, codex, agy by default; agent opt-in), parses each
+// parallel (claude, muse, codex, agy, composer-2.5, grok-build, kimi, glm,
+// gpt-oss by default; bare agent opt-in), parses each
 // reviewer's JSON verdict, and emits a merged canonical response. This is the
 // "adversarial review" audit capability — fresh-eyes, single-shot, FAIL-OR —
 // folded into converge from the former standalone adversarial-review skill.
@@ -48,6 +49,7 @@ import (
 	"github.com/michaellady/mike-skills/llm-provider/agy"
 	"github.com/michaellady/mike-skills/llm-provider/claude"
 	"github.com/michaellady/mike-skills/llm-provider/codex"
+	"github.com/michaellady/mike-skills/llm-provider/muse"
 	"github.com/michaellady/mike-skills/llm-provider/provider"
 )
 
@@ -191,6 +193,10 @@ type reviewerSpec struct {
 // a list so attribution order and PATH (cli) names stay explicit.
 var registeredReviewers = []reviewerSpec{
 	{name: "claude", cli: "claude", make: func() provider.Provider { return claude.New() }},
+	// muse runs headless via `muse exec --json` (one-shot like agy — `muse
+	// resume` is interactive, so no transcript resume; resumable via --resume
+	// re-dispatch, non-recoverable from transcript like agy).
+	{name: "muse", cli: "muse", make: func() provider.Provider { return muse.New() }},
 	{name: "codex", cli: "codex", make: func() provider.Provider { return codex.New() }},
 	{name: "agent", cli: "agent", make: func() provider.Provider { return agent.New() }},
 	// composer-2.5 and grok-build are Cursor `agent` CLI *models*, not separate
@@ -219,9 +225,9 @@ var registeredReviewers = []reviewerSpec{
 
 // defaultReviewers is the comma-separated default for --reviewers.
 //
-// Default = claude + codex + agy + composer-2.5 + grok-build + kimi + glm +
-// gpt-oss: independent agent families catch different failure modes, and the
-// three open-weights families (Kimi, GLM, GPT-OSS) fail differently again
+// Default = claude + muse + codex + agy + composer-2.5 + grok-build + kimi +
+// glm + gpt-oss: independent agent families catch different failure modes, and
+// the three open-weights families (Kimi, GLM, GPT-OSS) fail differently again
 // from the frontier labs. composer-2.5, grok-build, kimi, and glm run via
 // the Cursor `agent` CLI and need a paid Cursor plan — on a free/low-tier plan
 // they quota-fail and land under `skipped`, so including them by default is
@@ -231,7 +237,7 @@ var registeredReviewers = []reviewerSpec{
 // Per-reviewer failures degrade gracefully: a reviewer that quota-fails,
 // auth-fails, or times out is reported under `skipped` (see unavailableReason),
 // NOT `parse_error` — so the remaining reviewers still produce a merged verdict.
-const defaultReviewers = "claude,codex,agy,composer-2.5,grok-build,kimi,glm,gpt-oss"
+const defaultReviewers = "claude,muse,codex,agy,composer-2.5,grok-build,kimi,glm,gpt-oss"
 
 // result is one reviewer's dispatch outcome, carried from its goroutine to the
 // collector. Shared by the fresh run and the --resume re-dispatch.
@@ -272,7 +278,7 @@ func Run(args []string) int {
 		"wall-clock budget (seconds) for the whole fan-out; 0 = wait for every reviewer (each still bounded by --timeout). When >0, reviewers still running at the deadline are marked skipped(timeout) and a PARTIAL merge is emitted before any outer wall-clock kill. Keep it below the caller's budget, and keep --timeout below --deadline.")
 	fs.BoolVar(&quiet, "quiet", false, "suppress provider heartbeat lines on stderr")
 	fs.StringVar(&reviewersCSV, "reviewers", defaultReviewers,
-		"comma-separated reviewers to dispatch (registered: claude,codex,agent,composer-2.5,grok-build,agy,kimi,glm,gpt-oss)")
+		"comma-separated reviewers to dispatch (registered: claude,muse,codex,agent,composer-2.5,grok-build,agy,kimi,glm,gpt-oss)")
 	fs.BoolVar(&noLedger, "no-ledger", false, "do not record this audit to the SQLite ledger")
 	fs.StringVar(&label, "label", "", "label for the ledger audit row (defaults to the first draft id)")
 	fs.StringVar(&ledgerPath, "ledger", "", "ledger DB path (overrides CONVERGE_LEDGER for this run)")

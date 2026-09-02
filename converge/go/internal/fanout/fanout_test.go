@@ -290,9 +290,9 @@ func TestSelectReviewers_Default(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Default = the five frontier-family reviewers + the three open-weights
+	// Default = the six frontier-family reviewers + the three open-weights
 	// families (kimi, glm, gpt-oss); the bare `agent` provider stays opt-in.
-	want := []string{"claude", "codex", "agy", "composer-2.5", "grok-build", "kimi", "glm", "gpt-oss"}
+	want := []string{"claude", "muse", "codex", "agy", "composer-2.5", "grok-build", "kimi", "glm", "gpt-oss"}
 	if len(got) != len(want) {
 		t.Fatalf("default should be %v, got %d items", want, len(got))
 	}
