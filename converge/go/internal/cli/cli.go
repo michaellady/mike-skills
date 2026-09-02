@@ -57,6 +57,8 @@ func Run(args []string) int {
 		return runLLM(rest, "codex")
 	case "claude-critique":
 		return runLLM(rest, "claude")
+	case "muse-critique":
+		return runLLM(rest, "muse")
 	case "llm-critique":
 		return runLLM(rest, "")
 	case "audit":
@@ -112,8 +114,8 @@ Prompt + schema
                                          (set CONVERGE_REQUIRE_EVIDENCE=1 for
                                          implement/verify/review)
 
-LLM transport (codex, claude, agent, or agy)
-  llm-critique --provider {codex|claude|agent|agy} [--resume <id>] [--model <m>]
+LLM transport (codex, claude, agent, agy, or muse)
+  llm-critique --provider {codex|claude|agent|agy|muse} [--resume <id>] [--model <m>]
                <prompt-file> [effort]    Run the chosen LLM, stream events to
                                          stderr, write final message to stdout.
                                          Captures session/thread id on round 1.
@@ -123,9 +125,12 @@ LLM transport (codex, claude, agent, or agy)
                                          callers.
   claude-critique [--resume <session-id>] [--model <m>] <prompt-file> [effort]
                                          Alias for llm-critique --provider claude.
+  muse-critique [--model <m>] <prompt-file> [effort]
+                                         Alias for llm-critique --provider muse
+                                         (one-shot: --resume is ignored).
 
 Adversarial audit (fresh-eyes fan-out — the folded adversarial-review)
-  audit [--reviewers claude,codex,agy,composer-2.5,grok-build,kimi,glm,gpt-oss]
+  audit [--reviewers claude,muse,codex,agy,composer-2.5,grok-build,kimi,glm,gpt-oss]
         [--prompt-file <p>] [--timeout <s>] [--deadline <s>] [--quiet]
                                          Fan the SAME composed prompt out to all
                                          reviewers in parallel, FAIL-OR merge,
@@ -143,7 +148,7 @@ Adversarial audit (fresh-eyes fan-out — the folded adversarial-review)
   audit --recover <run-id>               Salvage a run WITHOUT re-running: read
                                          persisted verdicts, else reconstruct from
                                          each reviewer's own CLI transcript
-                                         (agy is non-recoverable → skipped).
+                                         (agy/muse are non-recoverable → skipped).
   audit --list-runs                      List persisted runs newest-first with
                                          per-run completeness.
 
@@ -166,7 +171,7 @@ Inspection
   list-providers                         List available LLM providers
   help                                   This message
 
-Env vars: CONVERGE_CODEX_TIMEOUT, CONVERGE_CLAUDE_TIMEOUT, CONVERGE_CLAUDE_MODEL, CONVERGE_CODEX_MODEL,
+Env vars: CONVERGE_CODEX_TIMEOUT, CONVERGE_CLAUDE_TIMEOUT, CONVERGE_MUSE_TIMEOUT, CONVERGE_CLAUDE_MODEL, CONVERGE_CODEX_MODEL, CONVERGE_MUSE_MODEL,
 CONVERGE_QUIET, CONVERGE_HEARTBEAT_S, CONVERGE_THREAD_OUT, CONVERGE_DIFF_MAX_BYTES,
 CONVERGE_REQUIRE_EVIDENCE, CONVERGE_SCHEMA, CONVERGE_PROMPTS_DIR,
 CONVERGE_STATUS_DIR, CONVERGE_ACTIVE_PLAN, CONVERGE_SMOKE_BUILD,
@@ -555,7 +560,7 @@ func runLLM(args []string, providerHint string) int {
 		switch args[0] {
 		case "--provider":
 			if len(args) < 2 {
-				fmt.Fprintf(os.Stderr, "usage: %s --provider {codex|claude|agent|agy} [--resume <id>] [--model <m>] <prompt-file> [effort]\n", subcmd)
+				fmt.Fprintf(os.Stderr, "usage: %s --provider {codex|claude|agent|agy|muse} [--resume <id>] [--model <m>] <prompt-file> [effort]\n", subcmd)
 				return 2
 			}
 			providerName = args[1]
@@ -581,7 +586,7 @@ func runLLM(args []string, providerHint string) int {
 	}
 positional:
 	if providerName == "" {
-		fmt.Fprintln(os.Stderr, "llm-critique: --provider is required (codex|claude|agent|agy); or use codex-critique / claude-critique")
+		fmt.Fprintln(os.Stderr, "llm-critique: --provider is required (codex|claude|agent|agy|muse); or use codex-critique / claude-critique / muse-critique")
 		return 2
 	}
 	if len(args) < 1 {
