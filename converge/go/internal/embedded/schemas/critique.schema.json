@@ -2,13 +2,13 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/michaellady/mike-skills/blob/main/converge/schemas/critique.schema.json",
   "title": "Converge Critique",
-  "description": "Per-round critique payload from a reviewer (claude, codex, or agy) inside the /converge skill.",
+  "description": "Per-round critique payload from a reviewer inside the /converge skill. Negotiation reviewers: claude, muse, codex, agy, composer-2.5, grok-build; the audit fan-out also registers agent, kimi, glm, gpt-oss. Keep `author` enums in sync with registeredReviewers in go/internal/fanout/fanout.go.",
   "type": "object",
   "additionalProperties": false,
   "required": ["round", "author", "mode", "verdict", "summary", "issues"],
   "properties": {
     "round": { "type": "integer", "minimum": 1 },
-    "author": { "type": "string", "enum": ["claude", "codex", "agy", "agent"] },
+    "author": { "type": "string", "enum": ["claude", "muse", "codex", "agy", "agent", "composer-2.5", "grok-build", "kimi", "glm", "gpt-oss"] },
     "mode":   { "type": "string", "enum": ["plan", "implement", "verify", "review"] },
     "verdict": { "type": "string", "enum": ["needs_revision", "converged"] },
     "summary": {
@@ -24,7 +24,7 @@
         "required": ["id", "severity", "title", "body", "confidence", "recommendation"],
         "properties": {
           "id":       { "type": "string", "pattern": "^[A-Z]\\d+$",
-                        "description": "Reviewer prefix + number: Cn for claude, Kn for codex, An for agy." },
+                        "description": "Reviewer prefix + number: Cn for claude, Sn for muse, Kn for codex, An for agy, Mn for composer-2.5, Gn for grok-build." },
           "severity": { "type": "string", "enum": ["critical", "high", "medium", "low"] },
           "title":    { "type": "string", "minLength": 1 },
           "body":     { "type": "string", "minLength": 1,
@@ -47,7 +47,7 @@
         "additionalProperties": false,
         "required": ["on", "reason"],
         "properties": {
-          "on":     { "type": "string", "description": "Another reviewer's issue id (e.g. Cn, Kn, An)." },
+          "on":     { "type": "string", "description": "Another reviewer's issue id (e.g. Cn, Sn, Kn, An, Mn, Gn)." },
           "reason": { "type": "string", "minLength": 1 }
         }
       }
@@ -69,7 +69,7 @@
               "additionalProperties": false,
               "required": ["author", "position"],
               "properties": {
-                "author":   { "type": "string", "enum": ["claude", "codex", "agy", "agent"] },
+                "author":   { "type": "string", "enum": ["claude", "muse", "codex", "agy", "agent", "composer-2.5", "grok-build", "kimi", "glm", "gpt-oss"] },
                 "position": { "type": "string", "minLength": 1 }
               }
             }
