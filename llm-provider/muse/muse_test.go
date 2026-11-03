@@ -15,6 +15,9 @@ import (
 // stubScript is a fake `muse` CLI: its behavior switches on $STUB_MODE so
 // each test drives one transport path without network or credentials.
 const stubScript = `#!/bin/sh
+if [ -n "$STUB_ARGS_FILE" ]; then
+  printf '%s\n' "$@" > "$STUB_ARGS_FILE"
+fi
 case "$STUB_MODE" in
   ok)
     printf '%s\n' \
@@ -80,6 +83,46 @@ func TestRun_OK(t *testing.T) {
 	}
 	if p.Name() != "muse" {
 		t.Fatalf("Name = %q, want muse", p.Name())
+	}
+}
+
+// Check the transport contract: use the subscribed provider, retain guards,
+// select the verified default, and honor explicit/environment overrides.
+func TestRun_ModelAndPermissions(t *testing.T) {
+	for _, tc := range []struct{ name, explicit, env, want string }{
+		{"default", "", "", "muse-wonder-1.0"},
+		{"environment", "", "env-model", "env-model"},
+		{"explicit", "explicit-model", "env-model", "explicit-model"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prompt, thread := withStub(t, "ok")
+			argsFile := filepath.Join(t.TempDir(), "args")
+			t.Setenv("STUB_ARGS_FILE", argsFile)
+			t.Setenv("CONVERGE_MUSE_MODEL", tc.env)
+			err := New().Run(context.Background(), provider.Options{
+				PromptFile: prompt, ThreadOut: thread, Model: tc.explicit,
+				Quiet: true, Stdout: &strings.Builder{}, Stderr: &strings.Builder{},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(argsFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			args := "\n" + string(data)
+			for _, want := range []string{"--provider\nmeta", "--model\n" + tc.want,
+				"--disable-write", "--disable-shell", "--disable-web-tools", "--no-foreign-personal-context"} {
+				if !strings.Contains(args, "\n"+want+"\n") {
+					t.Fatalf("missing %q in args %q", want, args)
+				}
+			}
+			for _, forbidden := range []string{"--disable-approval", "--disable-sandbox", "--yolo"} {
+				if strings.Contains(args, "\n"+forbidden+"\n") {
+					t.Fatalf("unsafe flag %q", forbidden)
+				}
+			}
+		})
 	}
 }
 

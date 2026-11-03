@@ -204,18 +204,15 @@ var registeredReviewers = []reviewerSpec{
 	// (PATH check), and runProvider keys its thread temp-file on `name` (not
 	// p.Name(), which is "agent" for all three) so concurrent runs don't collide.
 	{name: "composer-2.5", cli: "agent", model: "composer-2.5", make: func() provider.Provider { return agent.New() }},
-	// grok-build-0.1 vanished from Cursor's roster (the 2026-07 dead-pin outage); the grok
-	// family now ships as cursor-grok-4.5-* — pin the highest-effort variant. The reviewer
-	// KEEPS the name "grok-build" so ledger history and the standing all-five rule read
-	// continuously.
-	{name: "grok-build", cli: "agent", model: "cursor-grok-4.5-high", make: func() provider.Provider { return agent.New() }},
-	// agy previously ran Antigravity's session default; pin the strongest Gemini it offers
-	// (`agy models`) so the fifth family reviews at full strength too.
-	{name: "agy", cli: "agy", model: "gemini-3.1-pro-high", make: func() provider.Provider { return agy.New() }},
+	// Keep the stable reviewer name for ledger history. The model was verified
+	// against this account's Cursor subscription on 2026-11-03.
+	{name: "grok-build", cli: "agent", model: "grok-4.7-xhigh", make: func() provider.Provider { return agent.New() }},
+	// The provider selects the verified Gemini default while honoring overrides.
+	{name: "agy", cli: "agy", make: func() provider.Provider { return agy.New() }},
 	// The top OPEN-WEIGHTS families on Cursor's roster (2026-07): Moonshot's Kimi and
 	// Zhipu's GLM, each pinned to its strongest listed variant. Open models fail in
 	// different ways than the frontier labs' — cheap extra diversity for the audit panel.
-	{name: "kimi", cli: "agent", model: "kimi-k2.7-code", make: func() provider.Provider { return agent.New() }},
+	{name: "kimi", cli: "agent", model: "kimi-k3-max", make: func() provider.Provider { return agent.New() }},
 	{name: "glm", cli: "agent", model: "glm-5.2-max", make: func() provider.Provider { return agent.New() }},
 	// The third open-weights family: OpenAI's GPT-OSS 120B, served through the agy CLI
 	// (its only effort tier is Medium). Runs on agy like the gemini pin — the thread

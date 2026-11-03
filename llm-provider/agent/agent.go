@@ -86,7 +86,7 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 		return provider.NewError(provider.ExitBadArgs, "cannot read prompt: %v", err)
 	}
 
-	args := []string{"--print", "--output-format", "text", "--trust"}
+	args := []string{"--print", "--output-format", "text", "--trust", "--mode", "ask", "--sandbox", "enabled"}
 	model := opts.Model
 	if model == "" {
 		model = os.Getenv("CONVERGE_AGENT_MODEL")

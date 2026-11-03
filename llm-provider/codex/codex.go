@@ -78,12 +78,15 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 		return provider.NewError(provider.ExitBadArgs, "cannot read prompt: %v", err)
 	}
 
-	// Model selection: explicit opts.Model > $CONVERGE_CODEX_MODEL > codex's own
-	// config.toml default. Passed as a `-c model=` config override (works on both
+	// Model selection: explicit opts.Model > $CONVERGE_CODEX_MODEL > the
+	// subscription model verified on 2026-11-03. Passed as a `-c model=` config override (works on both
 	// fresh `exec` and `exec resume`, unlike the `-s` sandbox flag).
 	model := opts.Model
 	if model == "" {
 		model = os.Getenv("CONVERGE_CODEX_MODEL")
+	}
+	if model == "" {
+		model = "gpt-6.1-sol"
 	}
 
 	args := []string{"exec"}

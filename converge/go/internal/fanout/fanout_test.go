@@ -314,7 +314,7 @@ func TestSelectReviewers_CursorModels(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Both route through the Cursor `agent` CLI, pinned to distinct models.
-	want := map[string]string{"composer-2.5": "composer-2.5", "grok-build": "cursor-grok-4.5-high"}
+	want := map[string]string{"composer-2.5": "composer-2.5", "grok-build": "grok-4.7-xhigh"}
 	if len(got) != len(want) {
 		t.Fatalf("want %d reviewers, got %d", len(want), len(got))
 	}

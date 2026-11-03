@@ -85,11 +85,13 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 		opts.ThreadOut = fmt.Sprintf("/tmp/converge-thread-%d.txt", os.Getpid())
 	}
 	// Model selection: explicit opts.Model > $CONVERGE_MUSE_MODEL > the CLI's
-	// own default. Deliberately no baked-in default — model ids are
-	// probe-before-wire values, and the CLI default is the live one.
+	// verified subscription model. Wonder Full is not available on every plan.
 	model := opts.Model
 	if model == "" {
 		model = os.Getenv("CONVERGE_MUSE_MODEL")
+	}
+	if model == "" {
+		model = "muse-wonder-1.0"
 	}
 	// Effort maps 1:1 onto the CLI's --reasoning-effort
 	// (none|minimal|low|medium|high|xhigh|ultra); xhigh matches the
@@ -108,7 +110,11 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 		"--prompt-file", opts.PromptFile,
 		"--session-id", sessionID,
 		"--reasoning-effort", effort,
-		"--disable-approval",
+		"--provider", "meta",
+		"--disable-write",
+		"--disable-shell",
+		"--disable-web-tools",
+		"--no-foreign-personal-context",
 	}
 	if model != "" {
 		args = append(args, "--model", model)
