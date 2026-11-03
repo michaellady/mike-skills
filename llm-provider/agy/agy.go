@@ -1,5 +1,5 @@
 // Package agy implements the `agy` CLI provider — a non-interactive agent CLI
-// invoked as `agy --print <prompt> --dangerously-skip-permissions`, capturing
+// invoked as `agy --print <prompt> --mode plan --sandbox`, capturing
 // stdout as the assistant's reply.
 //
 // This replaces the deprecated `gemini` provider. As of this migration no
@@ -73,14 +73,16 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 	}
 
 	// `agy --print <prompt>` runs a single prompt non-interactively and prints
-	// the response to stdout; --dangerously-skip-permissions avoids interactive
-	// tool-permission prompts that would otherwise block headless use.
-	args := []string{"--print", string(prompt), "--dangerously-skip-permissions"}
+	// the response to stdout. Reviews retain permissions and sandbox protection.
+	args := []string{"--print", string(prompt), "--mode", "plan", "--sandbox"}
 	// Model selection: explicit opts.Model > $CONVERGE_AGY_MODEL > agy's own session
 	// default. The id form (e.g. "gemini-3.1-pro-high") is stable; `agy models` lists them.
 	model := opts.Model
 	if model == "" {
 		model = os.Getenv("CONVERGE_AGY_MODEL")
+	}
+	if model == "" {
+		model = "gemini-4-argon-high"
 	}
 	if model != "" {
 		args = append(args, "--model", model)

@@ -290,9 +290,9 @@ func TestSelectReviewers_Default(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Default = the five frontier-family reviewers + the three open-weights
-	// families (kimi, glm, gpt-oss); the bare `agent` provider stays opt-in.
-	want := []string{"claude", "codex", "agy", "composer-2.5", "grok-build", "kimi", "glm", "gpt-oss"}
+	// Default = the six frontier-family reviewers + the two open-weights
+	// families (kimi, glm); the bare `agent` provider stays opt-in.
+	want := []string{"claude", "muse", "codex", "agy", "composer-2.5", "grok-build", "kimi", "glm"}
 	if len(got) != len(want) {
 		t.Fatalf("default should be %v, got %d items", want, len(got))
 	}
@@ -308,13 +308,19 @@ func TestSelectReviewers_Default(t *testing.T) {
 	}
 }
 
+func TestSelectReviewers_RemovedGPTOSS(t *testing.T) {
+	if _, err := selectReviewers("gpt-oss"); err == nil {
+		t.Fatal("removed GPT-OSS reviewer must be rejected")
+	}
+}
+
 func TestSelectReviewers_CursorModels(t *testing.T) {
 	got, err := selectReviewers("composer-2.5,grok-build")
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Both route through the Cursor `agent` CLI, pinned to distinct models.
-	want := map[string]string{"composer-2.5": "composer-2.5", "grok-build": "cursor-grok-4.5-high"}
+	want := map[string]string{"composer-2.5": "composer-2.5", "grok-build": "grok-4.7-xhigh"}
 	if len(got) != len(want) {
 		t.Fatalf("want %d reviewers, got %d", len(want), len(got))
 	}

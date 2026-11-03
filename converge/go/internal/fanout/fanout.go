@@ -1,5 +1,6 @@
 // Package fanout dispatches the SAME prompt to every selected reviewer CLI in
-// parallel (claude, codex, agy by default; agent opt-in), parses each
+// parallel (claude, muse, codex, agy, composer-2.5, grok-build, kimi, glm
+// by default; bare agent opt-in), parses each
 // reviewer's JSON verdict, and emits a merged canonical response. This is the
 // "adversarial review" audit capability — fresh-eyes, single-shot, FAIL-OR —
 // folded into converge from the former standalone adversarial-review skill.
@@ -48,6 +49,7 @@ import (
 	"github.com/michaellady/mike-skills/llm-provider/agy"
 	"github.com/michaellady/mike-skills/llm-provider/claude"
 	"github.com/michaellady/mike-skills/llm-provider/codex"
+	"github.com/michaellady/mike-skills/llm-provider/muse"
 	"github.com/michaellady/mike-skills/llm-provider/provider"
 )
 
@@ -191,6 +193,10 @@ type reviewerSpec struct {
 // a list so attribution order and PATH (cli) names stay explicit.
 var registeredReviewers = []reviewerSpec{
 	{name: "claude", cli: "claude", make: func() provider.Provider { return claude.New() }},
+	// muse runs headless via `muse exec --json` (one-shot like agy — `muse
+	// resume` is interactive, so no transcript resume; resumable via --resume
+	// re-dispatch, non-recoverable from transcript like agy).
+	{name: "muse", cli: "muse", make: func() provider.Provider { return muse.New() }},
 	{name: "codex", cli: "codex", make: func() provider.Provider { return codex.New() }},
 	{name: "agent", cli: "agent", make: func() provider.Provider { return agent.New() }},
 	// composer-2.5 and grok-build are Cursor `agent` CLI *models*, not separate
@@ -198,30 +204,23 @@ var registeredReviewers = []reviewerSpec{
 	// (PATH check), and runProvider keys its thread temp-file on `name` (not
 	// p.Name(), which is "agent" for all three) so concurrent runs don't collide.
 	{name: "composer-2.5", cli: "agent", model: "composer-2.5", make: func() provider.Provider { return agent.New() }},
-	// grok-build-0.1 vanished from Cursor's roster (the 2026-07 dead-pin outage); the grok
-	// family now ships as cursor-grok-4.5-* — pin the highest-effort variant. The reviewer
-	// KEEPS the name "grok-build" so ledger history and the standing all-five rule read
-	// continuously.
-	{name: "grok-build", cli: "agent", model: "cursor-grok-4.5-high", make: func() provider.Provider { return agent.New() }},
-	// agy previously ran Antigravity's session default; pin the strongest Gemini it offers
-	// (`agy models`) so the fifth family reviews at full strength too.
-	{name: "agy", cli: "agy", model: "gemini-3.1-pro-high", make: func() provider.Provider { return agy.New() }},
+	// Keep the stable reviewer name for ledger history. The model was verified
+	// against this account's Cursor subscription on 2026-11-03.
+	{name: "grok-build", cli: "agent", model: "grok-4.7-xhigh", make: func() provider.Provider { return agent.New() }},
+	// The provider selects the verified Gemini default while honoring overrides.
+	{name: "agy", cli: "agy", make: func() provider.Provider { return agy.New() }},
 	// The top OPEN-WEIGHTS families on Cursor's roster (2026-07): Moonshot's Kimi and
 	// Zhipu's GLM, each pinned to its strongest listed variant. Open models fail in
 	// different ways than the frontier labs' — cheap extra diversity for the audit panel.
-	{name: "kimi", cli: "agent", model: "kimi-k2.7-code", make: func() provider.Provider { return agent.New() }},
+	{name: "kimi", cli: "agent", model: "kimi-k3-max", make: func() provider.Provider { return agent.New() }},
 	{name: "glm", cli: "agent", model: "glm-5.2-max", make: func() provider.Provider { return agent.New() }},
-	// The third open-weights family: OpenAI's GPT-OSS 120B, served through the agy CLI
-	// (its only effort tier is Medium). Runs on agy like the gemini pin — the thread
-	// temp-file keys on the reviewer name, so concurrent agy-CLI reviewers don't collide.
-	{name: "gpt-oss", cli: "agy", model: "gpt-oss-120b-medium", make: func() provider.Provider { return agy.New() }},
 }
 
 // defaultReviewers is the comma-separated default for --reviewers.
 //
-// Default = claude + codex + agy + composer-2.5 + grok-build + kimi + glm +
-// gpt-oss: independent agent families catch different failure modes, and the
-// three open-weights families (Kimi, GLM, GPT-OSS) fail differently again
+// Default = claude + muse + codex + agy + composer-2.5 + grok-build + kimi +
+// glm: independent agent families catch different failure modes, and
+// the two open-weights families (Kimi, GLM) fail differently again
 // from the frontier labs. composer-2.5, grok-build, kimi, and glm run via
 // the Cursor `agent` CLI and need a paid Cursor plan — on a free/low-tier plan
 // they quota-fail and land under `skipped`, so including them by default is
@@ -231,7 +230,7 @@ var registeredReviewers = []reviewerSpec{
 // Per-reviewer failures degrade gracefully: a reviewer that quota-fails,
 // auth-fails, or times out is reported under `skipped` (see unavailableReason),
 // NOT `parse_error` — so the remaining reviewers still produce a merged verdict.
-const defaultReviewers = "claude,codex,agy,composer-2.5,grok-build,kimi,glm,gpt-oss"
+const defaultReviewers = "claude,muse,codex,agy,composer-2.5,grok-build,kimi,glm"
 
 // result is one reviewer's dispatch outcome, carried from its goroutine to the
 // collector. Shared by the fresh run and the --resume re-dispatch.
@@ -272,7 +271,7 @@ func Run(args []string) int {
 		"wall-clock budget (seconds) for the whole fan-out; 0 = wait for every reviewer (each still bounded by --timeout). When >0, reviewers still running at the deadline are marked skipped(timeout) and a PARTIAL merge is emitted before any outer wall-clock kill. Keep it below the caller's budget, and keep --timeout below --deadline.")
 	fs.BoolVar(&quiet, "quiet", false, "suppress provider heartbeat lines on stderr")
 	fs.StringVar(&reviewersCSV, "reviewers", defaultReviewers,
-		"comma-separated reviewers to dispatch (registered: claude,codex,agent,composer-2.5,grok-build,agy,kimi,glm,gpt-oss)")
+		"comma-separated reviewers to dispatch (registered: claude,muse,codex,agent,composer-2.5,grok-build,agy,kimi,glm)")
 	fs.BoolVar(&noLedger, "no-ledger", false, "do not record this audit to the SQLite ledger")
 	fs.StringVar(&label, "label", "", "label for the ledger audit row (defaults to the first draft id)")
 	fs.StringVar(&ledgerPath, "ledger", "", "ledger DB path (overrides CONVERGE_LEDGER for this run)")
