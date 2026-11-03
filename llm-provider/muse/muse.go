@@ -104,9 +104,18 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 	// Fresh session id per run, passed explicitly so the captured id is known
 	// upfront (the event stream echoes it back as stream.id).
 	sessionID := uuidV4()
+	// The complete review input is in PromptFile. Loading the caller's project
+	// can stall Muse before its first event and leaks unrelated project context.
+	// A fresh, untrusted workspace avoids discovery and keeps reviews isolated.
+	workspace, err := os.MkdirTemp("", "converge-muse-workspace-")
+	if err != nil {
+		return provider.NewError(provider.ExitBadArgs, "create review workspace: %v", err)
+	}
+	defer os.RemoveAll(workspace)
 	args := []string{
 		"exec",
 		"--json",
+		"--workspace", workspace,
 		"--prompt-file", opts.PromptFile,
 		"--session-id", sessionID,
 		"--reasoning-effort", effort,

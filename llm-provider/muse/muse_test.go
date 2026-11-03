@@ -111,6 +111,19 @@ func TestRun_ModelAndPermissions(t *testing.T) {
 				t.Fatal(err)
 			}
 			args := "\n" + string(data)
+			argv := strings.Split(strings.TrimSpace(string(data)), "\n")
+			workspace := ""
+			for i := 0; i+1 < len(argv); i++ {
+				if argv[i] == "--workspace" {
+					workspace = argv[i+1]
+				}
+			}
+			if workspace == "" || !strings.HasPrefix(filepath.Base(workspace), "converge-muse-workspace-") {
+				t.Fatalf("missing isolated review workspace in %q", args)
+			}
+			if _, err := os.Stat(workspace); !os.IsNotExist(err) {
+				t.Fatalf("review workspace was not removed: %v", err)
+			}
 			for _, want := range []string{"--provider\nmeta", "--model\n" + tc.want,
 				"--disable-write", "--disable-shell", "--disable-web-tools", "--no-foreign-personal-context"} {
 				if !strings.Contains(args, "\n"+want+"\n") {
