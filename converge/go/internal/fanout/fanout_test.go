@@ -290,9 +290,9 @@ func TestSelectReviewers_Default(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Default = the six frontier-family reviewers + the three open-weights
-	// families (kimi, glm, gpt-oss); the bare `agent` provider stays opt-in.
-	want := []string{"claude", "muse", "codex", "agy", "composer-2.5", "grok-build", "kimi", "glm", "gpt-oss"}
+	// Default = the six frontier-family reviewers + the two open-weights
+	// families (kimi, glm); the bare `agent` provider stays opt-in.
+	want := []string{"claude", "muse", "codex", "agy", "composer-2.5", "grok-build", "kimi", "glm"}
 	if len(got) != len(want) {
 		t.Fatalf("default should be %v, got %d items", want, len(got))
 	}
@@ -305,6 +305,12 @@ func TestSelectReviewers_Default(t *testing.T) {
 		if r.name == "agent" {
 			t.Fatalf("agent must NOT be in the default selection (opt-in only)")
 		}
+	}
+}
+
+func TestSelectReviewers_RemovedGPTOSS(t *testing.T) {
+	if _, err := selectReviewers("gpt-oss"); err == nil {
+		t.Fatal("removed GPT-OSS reviewer must be rejected")
 	}
 }
 

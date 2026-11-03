@@ -1,6 +1,6 @@
 // Package fanout dispatches the SAME prompt to every selected reviewer CLI in
-// parallel (claude, muse, codex, agy, composer-2.5, grok-build, kimi, glm,
-// gpt-oss by default; bare agent opt-in), parses each
+// parallel (claude, muse, codex, agy, composer-2.5, grok-build, kimi, glm
+// by default; bare agent opt-in), parses each
 // reviewer's JSON verdict, and emits a merged canonical response. This is the
 // "adversarial review" audit capability — fresh-eyes, single-shot, FAIL-OR —
 // folded into converge from the former standalone adversarial-review skill.
@@ -214,17 +214,13 @@ var registeredReviewers = []reviewerSpec{
 	// different ways than the frontier labs' — cheap extra diversity for the audit panel.
 	{name: "kimi", cli: "agent", model: "kimi-k3-max", make: func() provider.Provider { return agent.New() }},
 	{name: "glm", cli: "agent", model: "glm-5.2-max", make: func() provider.Provider { return agent.New() }},
-	// The third open-weights family: OpenAI's GPT-OSS 120B, served through the agy CLI
-	// (its only effort tier is Medium). Runs on agy like the gemini pin — the thread
-	// temp-file keys on the reviewer name, so concurrent agy-CLI reviewers don't collide.
-	{name: "gpt-oss", cli: "agy", model: "gpt-oss-120b-medium", make: func() provider.Provider { return agy.New() }},
 }
 
 // defaultReviewers is the comma-separated default for --reviewers.
 //
 // Default = claude + muse + codex + agy + composer-2.5 + grok-build + kimi +
-// glm + gpt-oss: independent agent families catch different failure modes, and
-// the three open-weights families (Kimi, GLM, GPT-OSS) fail differently again
+// glm: independent agent families catch different failure modes, and
+// the two open-weights families (Kimi, GLM) fail differently again
 // from the frontier labs. composer-2.5, grok-build, kimi, and glm run via
 // the Cursor `agent` CLI and need a paid Cursor plan — on a free/low-tier plan
 // they quota-fail and land under `skipped`, so including them by default is
@@ -234,7 +230,7 @@ var registeredReviewers = []reviewerSpec{
 // Per-reviewer failures degrade gracefully: a reviewer that quota-fails,
 // auth-fails, or times out is reported under `skipped` (see unavailableReason),
 // NOT `parse_error` — so the remaining reviewers still produce a merged verdict.
-const defaultReviewers = "claude,muse,codex,agy,composer-2.5,grok-build,kimi,glm,gpt-oss"
+const defaultReviewers = "claude,muse,codex,agy,composer-2.5,grok-build,kimi,glm"
 
 // result is one reviewer's dispatch outcome, carried from its goroutine to the
 // collector. Shared by the fresh run and the --resume re-dispatch.
@@ -275,7 +271,7 @@ func Run(args []string) int {
 		"wall-clock budget (seconds) for the whole fan-out; 0 = wait for every reviewer (each still bounded by --timeout). When >0, reviewers still running at the deadline are marked skipped(timeout) and a PARTIAL merge is emitted before any outer wall-clock kill. Keep it below the caller's budget, and keep --timeout below --deadline.")
 	fs.BoolVar(&quiet, "quiet", false, "suppress provider heartbeat lines on stderr")
 	fs.StringVar(&reviewersCSV, "reviewers", defaultReviewers,
-		"comma-separated reviewers to dispatch (registered: claude,muse,codex,agent,composer-2.5,grok-build,agy,kimi,glm,gpt-oss)")
+		"comma-separated reviewers to dispatch (registered: claude,muse,codex,agent,composer-2.5,grok-build,agy,kimi,glm)")
 	fs.BoolVar(&noLedger, "no-ledger", false, "do not record this audit to the SQLite ledger")
 	fs.StringVar(&label, "label", "", "label for the ledger audit row (defaults to the first draft id)")
 	fs.StringVar(&ledgerPath, "ledger", "", "ledger DB path (overrides CONVERGE_LEDGER for this run)")

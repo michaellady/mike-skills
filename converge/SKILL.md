@@ -11,7 +11,7 @@ Multi-AI iterative refinement across the full development lifecycle. Claude (thi
 1. **Convergence** — all reviewers agree the artifact is sound (within a bounded change-rate threshold), OR
 2. **Deadlock** — they disagree on a decision none can resolve from first principles, at which point the user is presented with each side's *best argument* and makes the call.
 
-The four **negotiation** modes (plan/implement/verify/review) share one core convergence loop and differ only in the artifact, the critique prompt, the apply-fixes semantics, and the deliverable. A fifth mode, **audit**, is the folded-in *adversarial review*: a single-shot, fresh-eyes, N-way fan-out (9 reviewers by default — claude + muse + codex + agy + composer-2.5 + grok-build + kimi + glm + gpt-oss) with FAIL-OR merge over arbitrary artifacts — no negotiation; it's the primitive other skills call. (`audit` absorbed the former standalone `adversarial-review` skill.)
+The four **negotiation** modes (plan/implement/verify/review) share one core convergence loop and differ only in the artifact, the critique prompt, the apply-fixes semantics, and the deliverable. A fifth mode, **audit**, is the folded-in *adversarial review*: a single-shot, fresh-eyes, N-way fan-out (8 reviewers by default — claude + muse + codex + agy + composer-2.5 + grok-build + kimi + glm) with FAIL-OR merge over arbitrary artifacts — no negotiation; it's the primitive other skills call. (`audit` absorbed the former standalone `adversarial-review` skill.)
 
 ## Modes
 
@@ -29,7 +29,7 @@ If the user types just `/converge` with no mode, infer from context (active plan
 
 ## Requirements
 
-- Reviewer CLIs on PATH: `codex` (`npm install -g @openai/codex`), `muse` (Muse Code; carries the `muse` reviewer), `agy` (carries the `agy`/Gemini and `gpt-oss` reviewers), and the Cursor `agent` CLI (carries the `composer-2.5`, `grok-build`, `kimi`, and `glm` models); `claude` is this agent. **Negotiation** runs the 6-way default (claude + muse + codex + agy + composer-2.5 + grok-build); **audit** runs the 9-way default (adds kimi + glm + gpt-oss). The Cursor models need a paid Cursor plan — without one they quota-fail and are reported under `skipped` (audit) and noted as skips in negotiation; a reviewer whose CLI is absent is likewise `skipped`. Drop reviewers from negotiation via `CONVERGE_REVIEWERS` (or narrow `--reviewers` for audit).
+- Reviewer CLIs on PATH: `codex` (`npm install -g @openai/codex`), `muse` (Muse Code; carries the `muse` reviewer), `agy` (carries the `agy`/Gemini reviewer), and the Cursor `agent` CLI (carries the `composer-2.5`, `grok-build`, `kimi`, and `glm` models); `claude` is this agent. **Negotiation** runs the 6-way default (claude + muse + codex + agy + composer-2.5 + grok-build); **audit** runs the 8-way default (adds kimi + glm). The Cursor models need a paid Cursor plan — without one they quota-fail and are reported under `skipped` (audit) and noted as skips in negotiation; a reviewer whose CLI is absent is likewise `skipped`. Drop reviewers from negotiation via `CONVERGE_REVIEWERS` (or narrow `--reviewers` for audit).
 - The transport binary at `bin/converge` (built from the Go source in `go/`). If missing, run `bash build.sh` from the skill root — needs Go 1.25+, no external deps.
 - For modes `implement`, `verify`, `review`: a git repository at the working directory.
 - For mode `review`: either uncommitted changes, an active branch with commits ahead of base, or an explicit PR # passed as `/converge review <PR>`.
@@ -49,7 +49,7 @@ All transport work — codex invocation, diff retrieval, log formatting, schema 
 | `bin/converge claude-critique [--resume <session-id>] [--model <m>] <prompt-file> [effort]` | Same shape as `codex-critique` but routes through the `claude` CLI (`claude -p ... --output-format stream-json`). Captures the session UUID for resume. `--model` defaults to `fable` (override with `$CONVERGE_CLAUDE_MODEL`). Same exit codes. |
 | `bin/converge muse-critique [--model <m>] <prompt-file> [effort]` | Same shape but routes through the `muse` CLI (`muse exec --json --provider meta --prompt-file ... --disable-write --disable-shell --disable-web-tools --no-foreign-personal-context`). One-shot: `--resume` is accepted but ignored (`muse resume` is interactive). `--model` / `$CONVERGE_MUSE_MODEL` override, else `muse-wonder-1.0`; `[effort]` maps to `--reasoning-effort` (default `max`). Same exit codes. |
 | `bin/converge llm-critique --provider {codex\|claude\|agent\|agy\|muse} [--resume <id>] [--model <m>] <prompt-file> [effort]` | Generic form — pick provider explicitly (`agy` replaced the deprecated `gemini`). The three `*-critique` subcommands are aliases. The Cursor models run through `--provider agent --model composer-2.5` and `--provider agent --model grok-4.7-xhigh` (Cursor renamed the grok family; `grok-build-0.1` is dead). |
-| `bin/converge audit [--reviewers claude,muse,codex,agy,composer-2.5,grok-build,kimi,glm,gpt-oss] [--prompt-file <p>] [--timeout <s>] [--deadline <s>] [--quiet] [--label <s>] [--no-ledger]` <br>`bin/converge audit --resume\|--recover <run-id>` <br>`bin/converge audit --list-runs` | **Adversarial review (fresh-eyes fan-out).** Fan the SAME composed prompt to all reviewers in parallel, parse each reviewer's JSON verdict, FAIL-OR merge with `[r1+r2+...]` issue attribution + graceful `skipped` degradation, emit canonical `{summary, verdicts[], reviewers, skipped}` JSON. Prompt from `--prompt-file` or stdin. Registered reviewers: claude, muse, codex, agent, composer-2.5, grok-build (`grok-4.7-xhigh`), agy, kimi (`kimi-k3-max`), glm (`glm-5.2-max`), gpt-oss (`gpt-oss-120b-medium`) — muse dispatches via the `muse` CLI, composer-2.5/grok-build/kimi/glm via the Cursor `agent` CLI and gpt-oss via the `agy` CLI, using the verified model defaults below; the bare `agent` reviewer stays opt-in. Every run prints `run-id: <id>` to stderr and persists reviewer outputs under `$CONVERGE_RUNS_DIR/<run-id>/` for `--resume`/`--recover`/`--list-runs` (see "Resuming or recovering an interrupted audit"). Used by `audit` mode + `review` round 1. **Every run also prints a per-reviewer ground-truth line to stderr** (`reviewers: codex=responded(some_fail) claude=parse_error …`) so a false `all_pass` can't hide, and **records to the ledger** (`audit_id == run-id`; `--label` tags the run, `--no-ledger` skips it). |
+| `bin/converge audit [--reviewers claude,muse,codex,agy,composer-2.5,grok-build,kimi,glm] [--prompt-file <p>] [--timeout <s>] [--deadline <s>] [--quiet] [--label <s>] [--no-ledger]` <br>`bin/converge audit --resume\|--recover <run-id>` <br>`bin/converge audit --list-runs` | **Adversarial review (fresh-eyes fan-out).** Fan the SAME composed prompt to all reviewers in parallel, parse each reviewer's JSON verdict, FAIL-OR merge with `[r1+r2+...]` issue attribution + graceful `skipped` degradation, emit canonical `{summary, verdicts[], reviewers, skipped}` JSON. Prompt from `--prompt-file` or stdin. Registered reviewers: claude, muse, codex, agent, composer-2.5, grok-build (`grok-4.7-xhigh`), agy, kimi (`kimi-k3-max`), glm (`glm-5.2-max`) — muse dispatches via the `muse` CLI, composer-2.5/grok-build/kimi/glm via the Cursor `agent` CLI, using the verified model defaults below; the bare `agent` reviewer stays opt-in. Every run prints `run-id: <id>` to stderr and persists reviewer outputs under `$CONVERGE_RUNS_DIR/<run-id>/` for `--resume`/`--recover`/`--list-runs` (see "Resuming or recovering an interrupted audit"). Used by `audit` mode + `review` round 1. **Every run also prints a per-reviewer ground-truth line to stderr** (`reviewers: codex=responded(some_fail) claude=parse_error …`) so a false `all_pass` can't hide, and **records to the ledger** (`audit_id == run-id`; `--label` tags the run, `--no-ledger` skips it). |
 | `bin/converge ledger {stats\|findings\|disposition}` | **Audit history + model-comparison ledger** (SQLite at `$CONVERGE_LEDGER`, default `~/.converge/ledger.db`; pure-Go driver, written best-effort by every `audit`). `stats` → per-model table: audits, responded/skipped/parse_error counts + response rate, findings by severity, and **precision** = fixed/(fixed+false_positive). `findings [--limit N]` → recent findings + current disposition. `disposition <finding_id> {fixed\|false_positive\|wontfix} [--note <s>] [--commit <sha>]` → record what happened to a finding so precision is real. Tables: `audits, reviews, findings, dispositions`. |
 | `bin/converge validate-critique <json>` | Validate against the embedded JSON Schema. Set `CONVERGE_REQUIRE_EVIDENCE=1` for implement/verify/review (forces `file`+`line_start`+`line_end`). |
 | `bin/converge smoke-check build\|test` | Project-type detection (`go.mod`, `Cargo.toml`, `package.json`, `pyproject.toml`) and run. Override with `$CONVERGE_SMOKE_BUILD` / `$CONVERGE_SMOKE_TEST`. |
@@ -68,7 +68,7 @@ When you invoke `codex-critique` (or `claude-critique` / `muse-critique` / `llm-
 - **agy → `gemini-4-argon-high`** (override with `--model` / `$CONVERGE_AGY_MODEL`). Uses plan mode with sandboxing.
 - **composer-2.5 → `--provider agent --model composer-2.5`** (Cursor's Composer 2.5).
 - **grok-build → `--provider agent --model grok-4.7-xhigh`**. The reviewer name stays stable. Cursor reviews use ask mode and sandboxing; confirm model availability with `agent --list-models`.
-- **kimi → `kimi-k3-max`**, **glm → `glm-5.2-max`**, **gpt-oss → `gpt-oss-120b-medium`**. Kimi and GLM use Cursor; GPT-OSS uses agy.
+- **kimi → `kimi-k3-max`**, **glm → `glm-5.2-max`**. Kimi and GLM use Cursor.
 
 Claude, Codex and Muse default to **`max` reasoning effort**. The optional generic `agent` reviewer explicitly selects `claude-fable-5-1-thinking-max`; it never defaults to Auto. Family-specific Cursor reviewers keep their highest verified variants. Explicit `--model`, provider environment overrides and the trailing `[effort]` argument remain available when the user requests a different setting.
 
@@ -366,11 +366,11 @@ Return ONLY this JSON, no prose:
 {"summary":"all_pass"|"some_fail","verdicts":[{"draft_id":"<id>","verdict":"PASS"|"FAIL","issues":["..."]}]}
 ```
 
-2. Run the fan-out (9-way default: claude + muse + codex + agy + composer-2.5 + grok-build + kimi + glm + gpt-oss):
+2. Run the fan-out (8-way default: claude + muse + codex + agy + composer-2.5 + grok-build + kimi + glm):
 
 ```bash
 printf '%s' "$ASSEMBLED_PROMPT" | bin/converge audit
-# or: bin/converge audit --prompt-file /tmp/audit-prompt.txt --reviewers claude,muse,codex,agy,composer-2.5,grok-build,kimi,glm,gpt-oss --timeout 300
+# or: bin/converge audit --prompt-file /tmp/audit-prompt.txt --reviewers claude,muse,codex,agy,composer-2.5,grok-build,kimi,glm --timeout 300
 ```
 
 Every run prints `run-id: <id>` to **stderr** and persists each reviewer's output under `$CONVERGE_RUNS_DIR/<run-id>/` (default `$HOME/.converge/runs/<run-id>/`) the instant that reviewer returns — so a wall-clock kill is recoverable (see "Resuming or recovering an interrupted audit" below). The run-id equals the ledger `audit_id`.
@@ -381,7 +381,7 @@ Every run prints `run-id: <id>` to **stderr** and persists each reviewer's outpu
 {
   "summary": "all_pass" | "some_fail" | "parse_error",
   "verdicts": [{"draft_id":"<id>","verdict":"PASS"|"FAIL","issues":["[claude+codex] ...","[grok-build] ..."]}],
-  "reviewers": ["claude","muse","codex","agy","composer-2.5","grok-build","kimi","glm","gpt-oss"],
+  "reviewers": ["claude","muse","codex","agy","composer-2.5","grok-build","kimi","glm"],
   "skipped": {"<reviewer>":"<reason>"}
 }
 ```
@@ -414,7 +414,7 @@ List runs, newest-first, with per-run completeness:
 ```bash
 bin/converge audit --list-runs
 # RUN_ID                             TS                   COMPLETE  REVIEWERS
-# 327ddbde…                          2026-08-15T23:34:47Z 7/9       claude,muse,codex,agy,composer-2.5,grok-build,kimi,glm,gpt-oss
+# 327ddbde…                          2026-08-15T23:34:47Z 7/8       claude,muse,codex,agy,composer-2.5,grok-build,kimi,glm
 ```
 
 Two recovery paths — pick by whether re-running is acceptable:
@@ -422,7 +422,7 @@ Two recovery paths — pick by whether re-running is acceptable:
 - **`audit --resume <run-id>`** — re-dispatch **only** the reviewers whose persisted output is missing or unparseable (each re-run persists like a fresh run), then merge the **union** of persisted + re-run verdicts. Idempotent: a `--resume` over an already-complete run re-dispatches nothing and re-emits the same merge. Uses the run's original reviewer set + prompt from `meta.json`/`prompt.txt` (not `--reviewers`). Honors `--timeout`/`--deadline`/`--quiet`/`--no-ledger`.
 - **`audit --recover <run-id>`** — salvage **without re-running anything**. Per reviewer: use the persisted `<name>.json`; else reconstruct from the reviewer's **own CLI transcript** — claude `~/.claude/projects/<cwd-slug>/<session-id>.jsonl`, codex `~/.codex/sessions/YYYY/MM/DD/rollout-*-<thread-id>.jsonl`, cursor `~/.cursor/projects/<slug>/agent-transcripts/<chat-id>/<chat-id>.jsonl` — extracting its final assistant message and merging that. A salvaged verdict is written back to `<name>.json` so `--recover` is idempotent.
 
-**agy and muse are non-recoverable.** The `agy` CLI writes no transcript of its own, so a reviewer running on agy (`agy` itself and `gpt-oss`) that didn't persist a `<name>.json` before the kill degrades to `skipped` ("no transcript — agy non-recoverable") under `--recover`. muse records its session id but has no headless transcript reader (`muse resume` is interactive-only), so it degrades the same way ("no transcript — muse non-recoverable"). Both *are* resumable — `--resume` simply re-runs them. Cursor reviewers (composer-2.5/grok-build/kimi/glm) capture no chat-id in the CLI's text mode, so their `--recover` transcript path is a **best-effort time-window match**; their reliable recovery path is the persisted `<name>.json` (or `--resume`).
+**agy and muse are non-recoverable.** The `agy` CLI writes no transcript of its own, so a reviewer running on agy that didn't persist a `<name>.json` before the kill degrades to `skipped` ("no transcript — agy non-recoverable") under `--recover`. muse records its session id but has no headless transcript reader (`muse resume` is interactive-only), so it degrades the same way ("no transcript — muse non-recoverable"). Both *are* resumable — `--resume` simply re-runs them. Cursor reviewers (composer-2.5/grok-build/kimi/glm) capture no chat-id in the CLI's text mode, so their `--recover` transcript path is a **best-effort time-window match**; their reliable recovery path is the persisted `<name>.json` (or `--resume`).
 
 Rule of thumb: **`--resume` when the reviewers are cheap/available to re-run** (you want a clean, complete merge); **`--recover` when re-running is expensive or impossible** (quota burned, provider now down) and you'll accept whatever the transcripts salvage.
 

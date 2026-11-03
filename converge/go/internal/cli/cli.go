@@ -130,7 +130,7 @@ LLM transport (codex, claude, agent, agy, or muse)
                                          (one-shot: --resume is ignored).
 
 Adversarial audit (fresh-eyes fan-out — the folded adversarial-review)
-  audit [--reviewers claude,muse,codex,agy,composer-2.5,grok-build,kimi,glm,gpt-oss]
+  audit [--reviewers claude,muse,codex,agy,composer-2.5,grok-build,kimi,glm]
         [--prompt-file <p>] [--timeout <s>] [--deadline <s>] [--quiet]
                                          Fan the SAME composed prompt out to all
                                          reviewers in parallel, FAIL-OR merge,
