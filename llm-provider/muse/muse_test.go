@@ -130,6 +130,7 @@ func TestRun_ModelAndPermissions(t *testing.T) {
 				t.Fatalf("review workspace was not removed: %v", err)
 			}
 			for _, want := range []string{"--provider\nmeta", "--model\n" + tc.want,
+				"--reasoning-effort\nmax",
 				"--disable-write", "--disable-shell", "--disable-web-tools", "--no-foreign-personal-context"} {
 				if !strings.Contains(args, "\n"+want+"\n") {
 					t.Fatalf("missing %q in args %q", want, args)

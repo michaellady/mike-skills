@@ -42,7 +42,7 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 		return provider.NewError(provider.ExitBadArgs, "codex CLI not on PATH (npm install -g @openai/codex)")
 	}
 	if opts.Effort == "" {
-		opts.Effort = "xhigh"
+		opts.Effort = "max"
 	}
 	if opts.Timeout == 0 {
 		opts.Timeout = 5 * time.Minute
@@ -86,7 +86,7 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 		model = os.Getenv("CONVERGE_CODEX_MODEL")
 	}
 	if model == "" {
-		model = "gpt-6.1-sol"
+		model = "gpt-6-astra"
 	}
 
 	args := []string{"exec"}
