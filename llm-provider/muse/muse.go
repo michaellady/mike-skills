@@ -134,6 +134,14 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 
 	cmd := exec.CommandContext(cctx, "muse", args...)
 	cmd.Stdin = nil
+	// This reviewer uses the user's Muse Code subscription. The CLI gives
+	// META_API_KEY priority over account login; exclude that override only in
+	// this child, without reading or changing the caller's credential value.
+	for _, entry := range os.Environ() {
+		if !strings.HasPrefix(entry, "META_API_KEY=") {
+			cmd.Env = append(cmd.Env, entry)
+		}
+	}
 	// Kill muse's whole process group (not just the direct pid) on
 	// cancellation, and bound cmd.Wait() so a straggler holding the stdout
 	// pipe can't wedge the fan-out past the merge.

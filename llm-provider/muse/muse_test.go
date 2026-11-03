@@ -15,6 +15,10 @@ import (
 // stubScript is a fake `muse` CLI: its behavior switches on $STUB_MODE so
 // each test drives one transport path without network or credentials.
 const stubScript = `#!/bin/sh
+if [ "${META_API_KEY+x}" = x ]; then
+  echo "unexpected API-key override in subscription reviewer" >&2
+  exit 1
+fi
 if [ -n "$STUB_ARGS_FILE" ]; then
   printf '%s\n' "$@" > "$STUB_ARGS_FILE"
 fi
@@ -99,6 +103,7 @@ func TestRun_ModelAndPermissions(t *testing.T) {
 			argsFile := filepath.Join(t.TempDir(), "args")
 			t.Setenv("STUB_ARGS_FILE", argsFile)
 			t.Setenv("CONVERGE_MUSE_MODEL", tc.env)
+			t.Setenv("META_API_KEY", "not-a-real-key")
 			err := New().Run(context.Background(), provider.Options{
 				PromptFile: prompt, ThreadOut: thread, Model: tc.explicit,
 				Quiet: true, Stdout: &strings.Builder{}, Stderr: &strings.Builder{},
