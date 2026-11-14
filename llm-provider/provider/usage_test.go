@@ -124,3 +124,18 @@ func TestMissingUsageAndStorageFailure(t *testing.T) {
 		t.Fatal(stderr.String())
 	}
 }
+
+func TestHistoryDoesNotInventFields(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CONVERGE_USAGE_DIR", dir)
+	if e := os.WriteFile(filepath.Join(dir, "old.json"), []byte(`{"schema_version":1,"started_at":"2026-11-14T00:00:00Z","weekly":[]}`), 0600); e != nil {
+		t.Fatal(e)
+	}
+	var out bytes.Buffer
+	if e := UsageSnapshot(&out); e != nil {
+		t.Fatal(e)
+	}
+	if strings.Contains(out.String(), "warning_percent") || strings.Contains(out.String(), "observed_at") {
+		t.Fatal("invented absent metadata", out.String())
+	}
+}

@@ -377,7 +377,11 @@ func UsageSnapshot(w io.Writer) error {
 	if e != nil {
 		return e
 	}
-	records := []UsageRecord{}
+	type row struct {
+		record UsageRecord
+		raw    json.RawMessage
+	}
+	records := []row{}
 	for _, ent := range entries {
 		if ent.IsDir() || filepath.Ext(ent.Name()) != ".json" {
 			continue
@@ -390,11 +394,17 @@ func UsageSnapshot(w io.Writer) error {
 		if e = json.Unmarshal(b, &r); e != nil {
 			return fmt.Errorf("invalid usage receipt %s", ent.Name())
 		}
-		records = append(records, r)
+		records = append(records, row{r, json.RawMessage(b)})
 	}
-	sort.Slice(records, func(i, j int) bool { return records[i].StartedAt.Before(records[j].StartedAt) })
+	sort.Slice(records, func(i, j int) bool { return records[i].record.StartedAt.Before(records[j].record.StartedAt) })
 	if len(records) > 20 {
 		records = records[len(records)-20:]
 	}
-	return json.NewEncoder(w).Encode(records)
+	// Preserve the original shape: added fields in old receipts stay absent,
+	// rather than acquiring fabricated zero percentages or observation times.
+	out := []json.RawMessage{}
+	for _, r := range records {
+		out = append(out, r.raw)
+	}
+	return json.NewEncoder(w).Encode(out)
 }
