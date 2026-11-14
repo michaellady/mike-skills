@@ -46,7 +46,9 @@ func New() *Provider { return &Provider{} }
 func (*Provider) Name() string { return "muse" }
 
 // Run implements provider.Provider.
-func (*Provider) Run(ctx context.Context, opts provider.Options) error {
+func (*Provider) Run(ctx context.Context, opts provider.Options) (retErr error) {
+	finishUsage := provider.Monitor("muse", &opts)
+	defer func() { finishUsage(retErr) }()
 	if opts.PromptFile == "" {
 		return provider.NewError(provider.ExitBadArgs, "prompt file is required")
 	}
@@ -100,6 +102,7 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 		opts.Effort = "medium"
 	}
 	effort := opts.Effort
+	opts.Model = model
 
 	// Fresh session id per run, passed explicitly so the captured id is known
 	// upfront (the event stream echoes it back as stream.id).
@@ -183,6 +186,7 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 		return provider.NewError(provider.ExitNoFinalMsg, "%s", msg)
 	}
 	if waitErr != nil {
+		opts.Meter.Record.Status = "process_error"
 		fmt.Fprintln(opts.Stderr, "[muse] note: exited non-zero:", waitErr)
 	}
 

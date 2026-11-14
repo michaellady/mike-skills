@@ -45,7 +45,9 @@ func New() *Provider { return &Provider{} }
 func (*Provider) Name() string { return "agent" }
 
 // Run implements provider.Provider.
-func (*Provider) Run(ctx context.Context, opts provider.Options) error {
+func (*Provider) Run(ctx context.Context, opts provider.Options) (retErr error) {
+	finishUsage := provider.Monitor("agent", &opts)
+	defer func() { finishUsage(retErr) }()
 	if opts.PromptFile == "" {
 		return provider.NewError(provider.ExitBadArgs, "prompt file is required")
 	}
@@ -97,6 +99,7 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 		model = "claude-fable-5-1-thinking-medium"
 	}
 	args = append(args, "--model", model)
+	opts.Model = model
 	if opts.ResumeID != "" {
 		args = append(args, "--resume", opts.ResumeID)
 	}
@@ -142,6 +145,7 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 		return provider.NewError(provider.ExitNoFinalMsg, "%s", msg)
 	}
 	if runErr != nil {
+		opts.Meter.Record.Status = "process_error"
 		fmt.Fprintln(opts.Stderr, "[agent] note: exited non-zero:", runErr)
 	}
 

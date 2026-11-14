@@ -33,6 +33,16 @@ func Run(args []string) int {
 	}
 	cmd, rest := args[0], args[1:]
 	switch cmd {
+	case "usage":
+		if len(rest) != 0 {
+			fmt.Fprintln(os.Stderr, "usage: converge usage")
+			return 2
+		}
+		if err := provider.UsageSnapshot(os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		return 0
 	case "preflight":
 		return runPreflight(rest)
 	case "resolve-plan":
@@ -167,6 +177,8 @@ Ledger (SQLite audit history for model comparison)
                                          $HOME/.converge/ledger.db.
 
 Inspection
+  usage                                  Private invocation/weekly quota snapshots as JSON.
+                                         Percentages are account-wide, never summed.
   list-modes                             List embedded prompt template modes
   list-providers                         List available LLM providers
   help                                   This message

@@ -76,6 +76,20 @@ Apply these latency-conscious defaults to audit and negotiation review passes. R
 
 ## Common process
 
+### Usage and status on every invocation
+
+The shared provider layer emits safe `[usage]` JSON on stderr at start and completion for each Claude, Codex, Muse, agy and Cursor call, including audit and individual critique aliases. Status includes completion/failure/timeout, duration, requested model/effort, reported token counts where currently captured, weekly account percentages and reset/observation times where exposed, and alerts. Even `--quiet` retains these usage/status lines. Model replies remain on stdout.
+
+After every harness invocation, give the owner a concise status update with participation/failures and each available weekly percentage; explicitly name unavailable providers. These are account-wide subscription snapshots including other work, not this harness's share of a budget. Do not sum percentages across buckets/providers or infer them from token counts. Fresh native observations supersede older snapshots; reset/observation times matter. Claude's standard and included-overage windows remain separate.
+
+Alerts warn at **80% weekly used**, critical at **95%**, and report provider failures/timeouts or recording failures. Configure `CONVERGE_USAGE_WARN_PERCENT` and `CONVERGE_USAGE_CRITICAL_PERCENT` (0–100); invalid numbers use defaults, inverted thresholds warn and use defaults. These alerts do not stop calls, redeem resets, buy credits, rotate accounts or send external messages. Unknown weekly usage is not zero or a passing budget check.
+
+Private per-invocation receipts live in `$CONVERGE_USAGE_DIR`, default the OS user cache's `converge/usage` directory. `converge usage` returns the latest20 local receipts as JSON without model calls or a quota refresh. Running receipts left by a killed process remain running/incomplete. Unique IDs and atomic file replacement retain concurrent calls; no shared append log is introduced. No prompt, response, account identity, raw diagnostic or credential is recorded by this telemetry.
+
+Claude weekly percentages come from native `rate_limit_event` windows. Codex uses the native app-server `account/rateLimits/read` RPC, with a ten-second bound. Muse uses `muse usage --json`, bounded to five seconds; a populated verified weekly allowance includes the provider's as-of time, while null remains unavailable. These reads use existing native logins and make no model turn. They can add bounded completion latency. The checked agy and Cursor interfaces expose no weekly percentage: keep unavailable. Claude/Codex terminal token counts are captured; other token counts and dollar spend remain unknown in this implementation.
+
+Primitive Test: native metadata extraction, bounded allowance transport and atomic receipt replacement enforce transport/state contracts with existing OS primitives. Alert comparisons and history inspection are stateless Go consumer arithmetic. No market judgment, ranking or model-routing cognition moves into runtime code.
+
 ### Step 0 — Preflight + mode + scope
 
 1. **Run preflight first:** `bin/converge preflight <mode>`. If it fails, stop and surface the failure list — don't try to start a round loop without a working toolchain. If `bin/converge` is missing, run `bash build.sh` to build it.

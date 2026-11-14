@@ -15,6 +15,10 @@ import (
 // stubScript is a fake `muse` CLI: its behavior switches on $STUB_MODE so
 // each test drives one transport path without network or credentials.
 const stubScript = `#!/bin/sh
+if [ "$1" = usage ]; then
+  printf '%s\n' '{"allowance":null,"reason":"server_sent_no_usage"}'
+  exit 0
+fi
 if [ "${META_API_KEY+x}" = x ]; then
   echo "unexpected API-key override in subscription reviewer" >&2
   exit 1
@@ -48,6 +52,7 @@ esac
 func withStub(t *testing.T, mode string) (string, string) {
 	t.Helper()
 	dir := t.TempDir()
+	t.Setenv("CONVERGE_USAGE_DIR", filepath.Join(dir, "usage"))
 	stub := filepath.Join(dir, "muse")
 	if err := os.WriteFile(stub, []byte(stubScript), 0o755); err != nil {
 		t.Fatal(err)
