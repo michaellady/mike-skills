@@ -315,12 +315,12 @@ func TestSelectReviewers_RemovedGPTOSS(t *testing.T) {
 }
 
 func TestSelectReviewers_CursorModels(t *testing.T) {
-	got, err := selectReviewers("composer-2.5,grok-build")
+	got, err := selectReviewers("composer-2.5,grok-build,kimi,glm")
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Both route through the Cursor `agent` CLI, pinned to distinct models.
-	want := map[string]string{"composer-2.5": "composer-2.5", "grok-build": "grok-4.7-xhigh"}
+	want := map[string]string{"composer-2.5": "composer-2.5", "grok-build": "grok-4.7-medium", "kimi": "kimi-k3-low", "glm": "glm-5.2-high"}
 	if len(got) != len(want) {
 		t.Fatalf("want %d reviewers, got %d", len(want), len(got))
 	}

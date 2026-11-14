@@ -94,10 +94,10 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 		model = "muse-wonder-1.0"
 	}
 	// Effort maps 1:1 onto the CLI's --reasoning-effort
-	// (none|minimal|low|medium|high|xhigh|max|ultra). Max is the highest
-	// verified effort for the subscription model selected above.
+	// (none|minimal|low|medium|high|xhigh|max|ultra). Medium balances review latency
+	// with independent perspectives; explicit callers can still select another level.
 	if opts.Effort == "" {
-		opts.Effort = "max"
+		opts.Effort = "medium"
 	}
 	effort := opts.Effort
 

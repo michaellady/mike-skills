@@ -92,9 +92,9 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 		model = os.Getenv("CONVERGE_AGENT_MODEL")
 	}
 	if model == "" {
-		// Reviews prefer the strongest verified model over automatic routing.
+		// Reviews prefer an explicit medium-effort model over automatic routing.
 		// Named family reviewers still pass their own explicit model.
-		model = "claude-fable-5-1-thinking-max"
+		model = "claude-fable-5-1-thinking-medium"
 	}
 	args = append(args, "--model", model)
 	if opts.ResumeID != "" {

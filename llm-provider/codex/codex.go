@@ -42,7 +42,7 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 		return provider.NewError(provider.ExitBadArgs, "codex CLI not on PATH (npm install -g @openai/codex)")
 	}
 	if opts.Effort == "" {
-		opts.Effort = "max"
+		opts.Effort = "medium"
 	}
 	if opts.Timeout == 0 {
 		opts.Timeout = 5 * time.Minute

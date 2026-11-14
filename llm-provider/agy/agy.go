@@ -82,7 +82,7 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 		model = os.Getenv("CONVERGE_AGY_MODEL")
 	}
 	if model == "" {
-		model = "gemini-4-argon-high"
+		model = "gemini-4-argon-medium"
 	}
 	if model != "" {
 		args = append(args, "--model", model)

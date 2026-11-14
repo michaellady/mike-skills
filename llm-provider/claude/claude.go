@@ -82,7 +82,7 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 	}
 	effort := opts.Effort
 	if effort == "" {
-		effort = "max"
+		effort = "medium"
 	}
 
 	prompt, err := os.ReadFile(opts.PromptFile)
@@ -249,7 +249,7 @@ type event struct {
 	IsError   bool   `json:"is_error,omitempty"`
 	Result    string `json:"result,omitempty"`
 	Message   struct {
-		Role    string `json:"role,omitempty"`
+		Role    string          `json:"role,omitempty"`
 		Content json.RawMessage `json:"content,omitempty"`
 	} `json:"message,omitempty"`
 }

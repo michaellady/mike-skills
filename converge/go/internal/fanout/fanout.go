@@ -206,14 +206,16 @@ var registeredReviewers = []reviewerSpec{
 	{name: "composer-2.5", cli: "agent", model: "composer-2.5", make: func() provider.Provider { return agent.New() }},
 	// Keep the stable reviewer name for ledger history. The model was verified
 	// against this account's Cursor subscription on 2026-11-03.
-	{name: "grok-build", cli: "agent", model: "grok-4.7-xhigh", make: func() provider.Provider { return agent.New() }},
+	{name: "grok-build", cli: "agent", model: "grok-4.7-medium", make: func() provider.Provider { return agent.New() }},
 	// The provider selects the verified Gemini default while honoring overrides.
 	{name: "agy", cli: "agy", make: func() provider.Provider { return agy.New() }},
-	// The top OPEN-WEIGHTS families on Cursor's roster (2026-07): Moonshot's Kimi and
-	// Zhipu's GLM, each pinned to its strongest listed variant. Open models fail in
+	// Additional open-weight perspectives on Cursor: Moonshot's Kimi and
+	// Zhipu's GLM, pinned below max where medium is unavailable. Open models fail in
 	// different ways than the frontier labs' — cheap extra diversity for the audit panel.
-	{name: "kimi", cli: "agent", model: "kimi-k3-max", make: func() provider.Provider { return agent.New() }},
-	{name: "glm", cli: "agent", model: "glm-5.2-max", make: func() provider.Provider { return agent.New() }},
+	// Cursor exposes no medium effort for these two families. Preserve their
+	// perspectives at the lowest listed, live-probed variant instead of max.
+	{name: "kimi", cli: "agent", model: "kimi-k3-low", make: func() provider.Provider { return agent.New() }},
+	{name: "glm", cli: "agent", model: "glm-5.2-high", make: func() provider.Provider { return agent.New() }},
 }
 
 // defaultReviewers is the comma-separated default for --reviewers.
