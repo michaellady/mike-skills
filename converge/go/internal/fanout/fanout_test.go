@@ -351,11 +351,11 @@ func TestSelectReviewers_Agy(t *testing.T) {
 }
 
 func TestSelectReviewers_AllFour(t *testing.T) {
-	got, err := selectReviewers("claude,codex,agent,agy")
+	got, err := selectReviewers("claude,codex,composer-2.5,agy")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"claude", "codex", "agent", "agy"}
+	want := []string{"claude", "codex", "composer-2.5", "agy"}
 	if len(got) != 4 {
 		t.Fatalf("want 4 reviewers, got %d", len(got))
 	}
