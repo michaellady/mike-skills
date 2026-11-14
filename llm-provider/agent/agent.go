@@ -94,9 +94,9 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) (retErr error) 
 		model = os.Getenv("CONVERGE_AGENT_MODEL")
 	}
 	if model == "" {
-		// Reviews prefer an explicit medium-effort model over automatic routing.
-		// Named family reviewers still pass their own explicit model.
-		model = "claude-fable-5-2-medium"
+		// Claude already supplies Fable through its native reviewer. Cursor's
+		// default contributes Composer's independent perspective instead.
+		model = "composer-2.5"
 	}
 	args = append(args, "--model", model)
 	opts.Model = model

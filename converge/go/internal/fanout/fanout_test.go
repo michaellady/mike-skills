@@ -291,7 +291,7 @@ func TestSelectReviewers_Default(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Default = the six frontier-family reviewers + the two open-weights
-	// families (kimi, glm); the bare `agent` provider stays opt-in.
+	// families (kimi, glm); no duplicate generic Cursor reviewer.
 	want := []string{"claude", "muse", "codex", "agy", "composer-2.5", "grok-build", "kimi", "glm"}
 	if len(got) != len(want) {
 		t.Fatalf("default should be %v, got %d items", want, len(got))
@@ -303,7 +303,7 @@ func TestSelectReviewers_Default(t *testing.T) {
 	}
 	for _, r := range got {
 		if r.name == "agent" {
-			t.Fatalf("agent must NOT be in the default selection (opt-in only)")
+			t.Fatalf("duplicate agent reviewer must not be selected")
 		}
 	}
 }
@@ -334,13 +334,9 @@ func TestSelectReviewers_CursorModels(t *testing.T) {
 	}
 }
 
-func TestSelectReviewers_OptInAgent(t *testing.T) {
-	got, err := selectReviewers("claude,codex,agent")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 3 || got[2].name != "agent" {
-		t.Fatalf("want agent included, got %#v", got)
+func TestSelectReviewers_NoDuplicateCursorClaude(t *testing.T) {
+	if _, err := selectReviewers("claude,codex,agent"); err == nil {
+		t.Fatal("generic Cursor reviewer must be rejected; select Composer explicitly")
 	}
 }
 

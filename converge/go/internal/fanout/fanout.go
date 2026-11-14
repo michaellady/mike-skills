@@ -1,6 +1,6 @@
 // Package fanout dispatches the SAME prompt to every selected reviewer CLI in
 // parallel (claude, muse, codex, agy, composer-2.5, grok-build, kimi, glm
-// by default; bare agent opt-in), parses each
+// by default), parses each
 // reviewer's JSON verdict, and emits a merged canonical response. This is the
 // "adversarial review" audit capability — fresh-eyes, single-shot, FAIL-OR —
 // folded into converge from the former standalone adversarial-review skill.
@@ -198,7 +198,6 @@ var registeredReviewers = []reviewerSpec{
 	// re-dispatch, non-recoverable from transcript like agy).
 	{name: "muse", cli: "muse", make: func() provider.Provider { return muse.New() }},
 	{name: "codex", cli: "codex", make: func() provider.Provider { return codex.New() }},
-	{name: "agent", cli: "agent", make: func() provider.Provider { return agent.New() }},
 	// composer-2.5 and grok-build are Cursor `agent` CLI *models*, not separate
 	// binaries — same `agent` provider, pinned via --model. cli stays "agent"
 	// (PATH check), and runProvider keys its thread temp-file on `name` (not
@@ -226,8 +225,8 @@ var registeredReviewers = []reviewerSpec{
 // from the frontier labs. composer-2.5, grok-build, kimi, and glm run via
 // the Cursor `agent` CLI and need a paid Cursor plan — on a free/low-tier plan
 // they quota-fail and land under `skipped`, so including them by default is
-// safe (they simply don't contribute when unavailable). The bare `agent`
-// provider stays OPT-IN to avoid a redundant `auto`-model run alongside these.
+// safe (they simply don't contribute when unavailable). There is no generic
+// `agent` audit reviewer; select a named family instead of duplicating Claude.
 //
 // Per-reviewer failures degrade gracefully: a reviewer that quota-fails,
 // auth-fails, or times out is reported under `skipped` (see unavailableReason),
