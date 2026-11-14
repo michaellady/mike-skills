@@ -33,6 +33,7 @@ type Options struct {
 	Model      string        // optional provider-specific model override
 	Stderr     io.Writer
 	Stdout     io.Writer
+	Meter      *Meter // transport-owned usage observer; callers normally leave nil
 }
 
 // Provider is the contract every LLM transport implements.
