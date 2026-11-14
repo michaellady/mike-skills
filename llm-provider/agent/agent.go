@@ -96,7 +96,7 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) (retErr error) 
 	if model == "" {
 		// Reviews prefer an explicit medium-effort model over automatic routing.
 		// Named family reviewers still pass their own explicit model.
-		model = "claude-fable-5-1-thinking-medium"
+		model = "claude-fable-5-2-medium"
 	}
 	args = append(args, "--model", model)
 	opts.Model = model
