@@ -31,7 +31,9 @@ func New() *Provider { return &Provider{} }
 func (*Provider) Name() string { return "agy" }
 
 // Run implements provider.Provider.
-func (*Provider) Run(ctx context.Context, opts provider.Options) error {
+func (*Provider) Run(ctx context.Context, opts provider.Options) (retErr error) {
+	finishUsage := provider.Monitor("agy", &opts)
+	defer func() { finishUsage(retErr) }()
 	if opts.PromptFile == "" {
 		return provider.NewError(provider.ExitBadArgs, "prompt file is required")
 	}
@@ -98,9 +100,10 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 		model = os.Getenv("CONVERGE_AGY_MODEL")
 	}
 	if model == "" {
-		model = "gemini-4-argon-high"
+		model = "gemini-4-argon-medium"
 	}
 	if model != "" {
+		opts.Model = model
 		args = append(args, "--model", model)
 	}
 
@@ -140,6 +143,7 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 		return provider.NewError(provider.ExitNoFinalMsg, "%s", msg)
 	}
 	if runErr != nil {
+		opts.Meter.Record.Status = "process_error"
 		fmt.Fprintln(opts.Stderr, "[agy] note: exited non-zero:", runErr)
 	}
 
