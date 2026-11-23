@@ -49,13 +49,14 @@ All transport work — codex invocation, diff retrieval, log formatting, schema 
 | `bin/converge claude-critique [--resume <session-id>] [--model <m>] <prompt-file> [effort]` | Same shape as `codex-critique` but routes through the `claude` CLI (`claude -p ... --output-format stream-json`). Captures the session UUID for resume. `--model` defaults to `fable` (override with `$CONVERGE_CLAUDE_MODEL`). Same exit codes. |
 | `bin/converge muse-critique [--model <m>] <prompt-file> [effort]` | Same shape but routes through the `muse` CLI (`muse exec --json --provider meta --prompt-file ... --disable-write --disable-shell --disable-web-tools --no-foreign-personal-context`). One-shot: `--resume` is accepted but ignored (`muse resume` is interactive). `--model` / `$CONVERGE_MUSE_MODEL` override, else `muse-wonder-1.0`; `[effort]` maps to `--reasoning-effort` (default `medium`). Same exit codes. |
 | `bin/converge llm-critique --provider {codex\|claude\|agent\|agy\|muse} [--resume <id>] [--model <m>] <prompt-file> [effort]` | Generic form — pick provider explicitly (`agy` replaced the deprecated `gemini`). The three `*-critique` subcommands are aliases. The Cursor models run through `--provider agent --model composer-2.5` and `--provider agent --model grok-4.7-medium` (Cursor renamed the grok family; `grok-build-0.1` is dead). |
-| `bin/converge audit [--reviewers claude,muse,codex,agy,composer-2.5,grok-build,kimi,glm] [--prompt-file <p>] [--timeout <s>] [--deadline <s>] [--quiet] [--label <s>] [--no-ledger]` <br>`bin/converge audit --resume\|--recover <run-id>` <br>`bin/converge audit --list-runs` | **Adversarial review (fresh-eyes fan-out).** Fan the SAME composed prompt to all reviewers in parallel, parse each reviewer's JSON verdict, FAIL-OR merge with `[r1+r2+...]` issue attribution + graceful `skipped` degradation, emit canonical `{summary, verdicts[], reviewers, skipped}` JSON. Prompt from `--prompt-file` or stdin. Registered reviewers: claude, muse, codex, composer-2.5, grok-build (`grok-4.7-medium`), agy, kimi (`kimi-k3-low`), glm (`glm-5.2-high`) — muse dispatches via the `muse` CLI, composer-2.5/grok-build/kimi/glm via the Cursor `agent` CLI, using the verified model defaults below; the duplicate generic `agent` reviewer is removed. Every run prints `run-id: <id>` to stderr and persists reviewer outputs under `$CONVERGE_RUNS_DIR/<run-id>/` for `--resume`/`--recover`/`--list-runs` (see "Resuming or recovering an interrupted audit"). Used by `audit` mode + `review` round 1. **Every run also prints a per-reviewer ground-truth line to stderr** (`reviewers: codex=responded(some_fail) claude=parse_error …`) so a false `all_pass` can't hide, and **records to the ledger** (`audit_id == run-id`; `--label` tags the run, `--no-ledger` skips it). |
-| `bin/converge ledger {stats\|findings\|disposition}` | **Audit history + model-comparison ledger** (SQLite at `$CONVERGE_LEDGER`, default `~/.converge/ledger.db`; pure-Go driver, written best-effort by every `audit`). `stats` → per-model table: audits, responded/skipped/parse_error counts + response rate, findings by severity, and **precision** = fixed/(fixed+false_positive). `findings [--limit N]` → recent findings + current disposition. `disposition <finding_id> {fixed\|false_positive\|wontfix} [--note <s>] [--commit <sha>]` → record what happened to a finding so precision is real. Tables: `audits, reviews, findings, dispositions`. |
+| `bin/converge audit [--level light\|medium\|deep] [--reviewers <csv>] [--prompt-file <p>] [--timeout <s>] [--deadline <s>] [--effort <e>] [--quiet] [--label <s>] [--no-ledger]` <br>`bin/converge audit --resume\|--recover <run-id>` <br>`bin/converge audit --list-runs` | **Adversarial review (fresh-eyes fan-out).** `--level` picks the reviewer panel (default `deep` = all 8; see the Review levels table in the audit section) and an explicit `--reviewers` overrides it; `--effort` sets reasoning effort for claude/codex/muse (default: each provider's own, `medium`). Fan the SAME composed prompt to all reviewers in parallel, parse each reviewer's JSON verdict, FAIL-OR merge with `[r1+r2+...]` issue attribution + graceful `skipped` degradation, emit canonical `{summary, verdicts[], reviewers, skipped}` JSON. Prompt from `--prompt-file` or stdin. Registered reviewers: claude, muse, codex, composer-2.5, grok-build (`grok-4.7-medium`), agy, kimi (`kimi-k3-low`), glm (`glm-5.2-high`) — muse dispatches via the `muse` CLI, composer-2.5/grok-build/kimi/glm via the Cursor `agent` CLI, using the verified model defaults below; the duplicate generic `agent` reviewer is removed. Every run prints `run-id: <id>` to stderr and persists reviewer outputs under `$CONVERGE_RUNS_DIR/<run-id>/` for `--resume`/`--recover`/`--list-runs` (see "Resuming or recovering an interrupted audit"). Used by `audit` mode + `review` round 1. **Every run also prints a per-reviewer ground-truth line to stderr** (`reviewers: codex=responded(some_fail) claude=parse_error …`) so a false `all_pass` can't hide, and **records to the ledger** (`audit_id == run-id`; `--label` tags the run, `--no-ledger` skips it). |
+| `bin/converge ledger {stats\|findings\|disposition}` | **Audit history + model-comparison ledger** (SQLite at `$CONVERGE_LEDGER`, default `~/.converge/ledger.db`; pure-Go driver, written best-effort by every `audit`). `stats` → per-model table: audits, responded/skipped/parse_error counts + response rate, findings by severity, and **precision** = fixed/(fixed+false_positive). `stats --by-level` breaks rows out per review level (audits record their `--level`), so model families can be compared per depth. `findings [--limit N]` → recent findings + current disposition. `disposition <finding_id> {fixed\|false_positive\|wontfix} [--note <s>] [--commit <sha>]` → record what happened to a finding so precision is real. Tables: `audits, reviews, findings, dispositions`. |
 | `bin/converge validate-critique <json>` | Validate against the embedded JSON Schema. Set `CONVERGE_REQUIRE_EVIDENCE=1` for implement/verify/review (forces `file`+`line_start`+`line_end`). |
 | `bin/converge smoke-check build\|test` | Project-type detection (`go.mod`, `Cargo.toml`, `package.json`, `pyproject.toml`) and run. Override with `$CONVERGE_SMOKE_BUILD` / `$CONVERGE_SMOKE_TEST`. |
 | `bin/converge log {init\|row\|smoke\|note} <file> ...` | LOG / REVIEW.md writer — header, dated `### Run YYYY-MM-DD HH:MM` subsection, table rows, smoke-check lines, free-form notes. |
 | `bin/converge status {start\|round\|thread\|verdict\|end\|path\|show} <session-id> ...` | Per-round status snapshot at `${CONVERGE_STATUS_DIR:-/tmp}/converge-status-<sid>.json` so the user (or another agent) can `tail -F` the run. Use `$$` (your prompt's PID) as the session id. |
 | `bin/converge cleanup` | Remove `/tmp/converge-*` per-round payloads. Logs/REVIEW are deliverables; left alone. |
+| `bin/converge list-modes` / `bin/converge list-providers` | Introspection: list the embedded prompt templates (`plan`, `implement`, `verify`, `review`) and the LLM providers `llm-critique --provider` accepts. Use them to confirm what this build supports rather than assuming. |
 
 When you invoke `codex-critique` (or `claude-critique` / `muse-critique` / `llm-critique`), **leave its stderr connected to your terminal** so the user sees the heartbeat. Set `CONVERGE_QUIET=1` only if explicitly asked.
 
@@ -380,16 +381,27 @@ Return ONLY this JSON, no prose:
 {"summary":"all_pass"|"some_fail","verdicts":[{"draft_id":"<id>","verdict":"PASS"|"FAIL","issues":["..."]}]}
 ```
 
-2. Run the fan-out (8-way default: claude + muse + codex + agy + composer-2.5 + grok-build + kimi + glm):
+2. Pick the **review level** — scale the panel (and so cost/latency) to the artifact's stakes. Choosing the level is YOUR judgment; the binary owns the expansion:
+
+| Level | Use for | Reviewer panel |
+|---|---|---|
+| `light` | Low-stakes drafts: social posts, teasers, small internal docs | claude + codex |
+| `medium` | Plans, docs, routine diffs | the 6 negotiation reviewers: claude + muse + codex + agy + composer-2.5 + grok-build |
+| `deep` (default) | Production/infra diffs, ship gates, anything user-visible or hard to reverse | all 8: adds kimi + glm |
+
+When unsure, go one level up — a wasted deep audit costs minutes; a missed defect ships. A level changes **only the panel**: models, the `medium` reasoning default, and the 300s per-reviewer `--timeout` are the same at every level. Explicit flags still win: `--reviewers <csv>` replaces the panel, `--timeout <s>` resizes the per-reviewer ceiling, and `--effort low|medium|high|xhigh` raises or lowers reasoning for the reviewers that take it (claude, codex, muse). Every audit records its level in the ledger, so `ledger stats --by-level` accumulates the evidence to tune these presets.
+
+3. Run the fan-out:
 
 ```bash
-printf '%s' "$ASSEMBLED_PROMPT" | bin/converge audit
-# or: bin/converge audit --prompt-file /tmp/audit-prompt.txt --reviewers claude,muse,codex,agy,composer-2.5,grok-build,kimi,glm --timeout 300
+printf '%s' "$ASSEMBLED_PROMPT" | bin/converge audit                 # deep (all 8) by default
+bin/converge audit --level light --prompt-file /tmp/audit-prompt.txt # quick 2-reviewer gate
+# explicit knobs still win: bin/converge audit --level medium --timeout 600 --effort high --prompt-file ...
 ```
 
 Every run prints `run-id: <id>` to **stderr** and persists each reviewer's output under `$CONVERGE_RUNS_DIR/<run-id>/` (default `$HOME/.converge/runs/<run-id>/`) the instant that reviewer returns — so a wall-clock kill is recoverable (see "Resuming or recovering an interrupted audit" below). The run-id equals the ledger `audit_id`.
 
-3. Read the merged canonical JSON on stdout:
+4. Read the merged canonical JSON on stdout:
 
 ```json
 {
@@ -400,9 +412,10 @@ Every run prints `run-id: <id>` to **stderr** and persists each reviewer's outpu
 }
 ```
 
-- **Merge rule:** a draft is FAIL if ANY reviewer flagged it FAIL; PASS only if every responding reviewer passed it. Issues are clustered across reviewers, each prefixed `[r1+r2+...]`.
+- **Merge rule:** a draft is FAIL if ANY reviewer flagged it FAIL; PASS only if every responding reviewer passed it. Issues are clustered across reviewers, each prefixed `[r1+r2+...]` — that cluster prefix is the only attribution (echoed reviewer tags inside a reviewer's own issue text are stripped before clustering).
 - **Graceful degradation:** a reviewer that quota-/auth-fails or times out lands in `skipped` (not `parse_error`); the rest still produce a verdict. All reviewers unusable → `summary:"parse_error"`, exit 2.
 - **Wall-clock hygiene:** `--deadline <s>` caps the whole fan-out. At the deadline, reviewers still running are marked `skipped` ("timed out (deadline)"), their processes are killed, and a **partial merge is emitted before any outer kill** (their persisted files still enable a later `--resume`). `--deadline 0` (default) waits for every reviewer, each still bounded by `--timeout`. Keep `--deadline` below the caller's wall-clock budget and `--timeout` below `--deadline`.
+- **Timeout salvage:** providers hand back whatever they captured when `--timeout` fires. A reviewer whose complete verdict landed at/after its timeout is salvaged into the merge as responded (stderr notes it); otherwise it is skipped as `timed out (no output)` or `timed out (unparsed output at <run-dir>/<reviewer>.json)` — the partial text is kept in the run dir for manual recovery. A reviewer dispatched by `--resume` runs at the original run's `--effort` unless you pass a new one, and the run keeps its original level in the ledger.
 
 ### Caller responsibilities (not the binary's)
 

@@ -2,13 +2,13 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/michaellady/mike-skills/blob/main/converge/schemas/critique.schema.json",
   "title": "Converge Critique",
-  "description": "Per-round critique payload from a reviewer inside the /converge skill. Negotiation reviewers: claude, muse, codex, agy, composer-2.5, grok-build; the audit fan-out also registers agent, kimi, glm, gpt-oss. Keep `author` enums in sync with registeredReviewers in go/internal/fanout/fanout.go.",
+  "description": "Per-round critique payload from a reviewer inside the /converge skill. Negotiation reviewers: claude, muse, codex, agy, composer-2.5, grok-build; the audit fan-out also registers kimi, glm; `agent` remains a valid negotiation author. Keep `author` enums in sync with registeredReviewers in go/internal/fanout/fanout.go.",
   "type": "object",
   "additionalProperties": false,
   "required": ["round", "author", "mode", "verdict", "summary", "issues"],
   "properties": {
     "round": { "type": "integer", "minimum": 1 },
-    "author": { "type": "string", "enum": ["claude", "muse", "codex", "agy", "agent", "composer-2.5", "grok-build", "kimi", "glm", "gpt-oss"] },
+    "author": { "type": "string", "enum": ["claude", "muse", "codex", "agy", "agent", "composer-2.5", "grok-build", "kimi", "glm"] },
     "mode":   { "type": "string", "enum": ["plan", "implement", "verify", "review"] },
     "verdict": { "type": "string", "enum": ["needs_revision", "converged"] },
     "summary": {
@@ -69,7 +69,7 @@
               "additionalProperties": false,
               "required": ["author", "position"],
               "properties": {
-                "author":   { "type": "string", "enum": ["claude", "muse", "codex", "agy", "agent", "composer-2.5", "grok-build", "kimi", "glm", "gpt-oss"] },
+                "author":   { "type": "string", "enum": ["claude", "muse", "codex", "agy", "agent", "composer-2.5", "grok-build", "kimi", "glm"] },
                 "position": { "type": "string", "minLength": 1 }
               }
             }

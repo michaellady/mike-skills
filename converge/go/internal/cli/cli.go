@@ -140,8 +140,8 @@ LLM transport (codex, claude, agent, agy, or muse)
                                          (one-shot: --resume is ignored).
 
 Adversarial audit (fresh-eyes fan-out — the folded adversarial-review)
-  audit [--reviewers claude,muse,codex,agy,composer-2.5,grok-build,kimi,glm]
-        [--prompt-file <p>] [--timeout <s>] [--deadline <s>] [--quiet]
+  audit [--level light|medium|deep] [--reviewers <csv>] [--prompt-file <p>]
+        [--timeout <s>] [--deadline <s>] [--effort <e>] [--quiet]
                                          Fan the SAME composed prompt out to all
                                          reviewers in parallel, FAIL-OR merge,
                                          emit canonical {summary,verdicts,...}
@@ -153,6 +153,13 @@ Adversarial audit (fresh-eyes fan-out — the folded adversarial-review)
                                          wall clock: stragglers become
                                          skipped(timeout) and a PARTIAL merge is
                                          emitted before any outer kill.
+                                         --level picks the reviewer panel (default
+                                         deep = all 8: claude,muse,codex,agy,
+                                         composer-2.5,grok-build,kimi,glm; medium =
+                                         the first 6; light = claude,codex);
+                                         --reviewers overrides it. --effort sets
+                                         reasoning effort for claude/codex/muse
+                                         (default: each provider's own, medium).
   audit --resume <run-id>                Re-dispatch ONLY the run's missing/failed
                                          reviewers, merge the union (idempotent).
   audit --recover <run-id>               Salvage a run WITHOUT re-running: read
@@ -163,10 +170,13 @@ Adversarial audit (fresh-eyes fan-out — the folded adversarial-review)
                                          per-run completeness.
 
 Ledger (SQLite audit history for model comparison)
-  ledger stats                           Per-model table: audits participated,
+  ledger stats [--by-level]              Per-model table: audits participated,
                                          responded/skipped/parse_error (+ rate),
                                          findings by severity, and precision
                                          (fixed / fixed+false_positive).
+                                         --by-level breaks rows out per review
+                                         level (light/medium/deep) to compare
+                                         model families across review depths.
   ledger findings [--limit N]            List the N most recent findings (ts,
                                          severity, title, loc, raised_by,
                                          finding_id, current disposition).
@@ -485,7 +495,16 @@ func runLedger(args []string) int {
 	action, rest := args[0], args[1:]
 	switch action {
 	case "stats":
-		if err := ledger.Stats(os.Stdout); err != nil {
+		byLevel := false
+		for _, a := range rest {
+			if a == "--by-level" {
+				byLevel = true
+				continue
+			}
+			fmt.Fprintln(os.Stderr, "ledger stats: unexpected argument", a)
+			return 2
+		}
+		if err := ledger.Stats(os.Stdout, byLevel); err != nil {
 			fmt.Fprintln(os.Stderr, "ledger stats:", err)
 			return 1
 		}
