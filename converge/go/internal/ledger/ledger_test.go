@@ -1,6 +1,7 @@
 package ledger
 
 import (
+	"database/sql"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -20,6 +21,7 @@ func sampleRecord() AuditRecord {
 		TS:                 "2026-05-31T12:00:00Z",
 		Label:              "PR#999",
 		Summary:            "some_fail",
+		Level:              "deep",
 		PromptSHA256:       "deadbeef",
 		ReviewersRequested: "claude,codex",
 		DurationMs:         1234,
@@ -53,7 +55,7 @@ func TestRecordAndStats(t *testing.T) {
 	}
 
 	var sb strings.Builder
-	if err := Stats(&sb); err != nil {
+	if err := Stats(&sb, false); err != nil {
 		t.Fatalf("Stats: %v", err)
 	}
 	out := sb.String()
@@ -93,7 +95,7 @@ func TestDispositionAffectsPrecision(t *testing.T) {
 
 	// Before any disposition, precision is "-" (no scored findings).
 	var before strings.Builder
-	if err := Stats(&before); err != nil {
+	if err := Stats(&before, false); err != nil {
 		t.Fatalf("Stats: %v", err)
 	}
 	if !strings.Contains(lineFor(before.String(), "claude"), "-") {
@@ -107,7 +109,7 @@ func TestDispositionAffectsPrecision(t *testing.T) {
 	}
 
 	var after strings.Builder
-	if err := Stats(&after); err != nil {
+	if err := Stats(&after, false); err != nil {
 		t.Fatalf("Stats: %v", err)
 	}
 	claudeLine := lineFor(after.String(), "claude")
@@ -122,7 +124,7 @@ func TestDispositionAffectsPrecision(t *testing.T) {
 		t.Fatalf("Disposition false_positive: %v", err)
 	}
 	var after2 strings.Builder
-	if err := Stats(&after2); err != nil {
+	if err := Stats(&after2, false); err != nil {
 		t.Fatalf("Stats: %v", err)
 	}
 	if !strings.Contains(lineFor(after2.String(), "claude"), "50%") {
@@ -192,6 +194,78 @@ func TestFindingIDStable(t *testing.T) {
 	}
 	if len(a) != 16 {
 		t.Errorf("FindingID should be 16 hex chars, got %d: %q", len(a), a)
+	}
+}
+
+// TestStatsByLevel: with --by-level, rows break out per (model, level) so
+// model families can be compared across review depths.
+func TestStatsByLevel(t *testing.T) {
+	withTempLedger(t)
+	deep := sampleRecord() // Level: "deep"
+	if err := Record(deep); err != nil {
+		t.Fatalf("Record deep: %v", err)
+	}
+	light := AuditRecord{
+		AuditID: NewAuditID(), TS: "2026-06-01T12:00:00Z", Label: "post-check",
+		Summary: "all_pass", Level: "light", ReviewersRequested: "claude,codex",
+		Reviews: []ReviewRow{
+			{Model: "claude", Status: "responded", Verdict: "all_pass", LatencyMs: 90},
+			{Model: "codex", Status: "responded", Verdict: "all_pass", LatencyMs: 80},
+		},
+	}
+	if err := Record(light); err != nil {
+		t.Fatalf("Record light: %v", err)
+	}
+
+	var sb strings.Builder
+	if err := Stats(&sb, true); err != nil {
+		t.Fatalf("Stats by-level: %v", err)
+	}
+	out := sb.String()
+	if !strings.Contains(out, "LEVEL") {
+		t.Fatalf("by-level output missing LEVEL column:\n%s", out)
+	}
+	// claude must have one light row and one deep row, light sorted first.
+	var claudeRows []string
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) > 1 && f[0] == "claude" {
+			claudeRows = append(claudeRows, f[1])
+		}
+	}
+	if len(claudeRows) != 2 || claudeRows[0] != "light" || claudeRows[1] != "deep" {
+		t.Fatalf("want claude rows [light deep], got %v in:\n%s", claudeRows, out)
+	}
+}
+
+// TestLevelColumnMigration: a ledger created before the level column existed
+// (CREATE TABLE IF NOT EXISTS won't add it) must be migrated on open.
+func TestLevelColumnMigration(t *testing.T) {
+	path := withTempLedger(t)
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open raw db: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE audits(
+		audit_id TEXT PRIMARY KEY, ts TEXT, label TEXT, summary TEXT,
+		prompt_sha256 TEXT, reviewers_requested TEXT, duration_ms INTEGER);`); err != nil {
+		t.Fatalf("create old-schema audits: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+
+	rec := sampleRecord()
+	rec.Level = "medium"
+	if err := Record(rec); err != nil {
+		t.Fatalf("Record on old-schema ledger should migrate, got: %v", err)
+	}
+	var sb strings.Builder
+	if err := Stats(&sb, true); err != nil {
+		t.Fatalf("Stats by-level after migration: %v", err)
+	}
+	if !strings.Contains(sb.String(), "medium") {
+		t.Fatalf("migrated ledger should carry the level:\n%s", sb.String())
 	}
 }
 

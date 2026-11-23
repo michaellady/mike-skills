@@ -112,6 +112,10 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) (retErr error) 
 
 	cmd := exec.CommandContext(cctx, "agy", args...)
 	cmd.Stdin = nil
+	// Bounded post-timeout drain: cmd.Run waits for its I/O copiers, which a
+	// never-exiting worker holding the pipe would block forever. WaitDelay
+	// guarantees termination at ~2x the timeout.
+	cmd.WaitDelay = opts.Timeout
 
 	var outBuf, errBuf strings.Builder
 	cmd.Stdout = &outBuf
@@ -124,7 +128,13 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) (retErr error) 
 	runErr := cmd.Run()
 
 	if cctx.Err() == context.DeadlineExceeded {
-		return provider.NewError(provider.ExitTimeout, "agy timed out after %s", opts.Timeout)
+		// Deliver whatever output was captured before the kill so the caller
+		// can salvage or persist it; the exit code still reports the deadline.
+		if partial := strings.TrimSpace(outBuf.String()); partial != "" {
+			_, _ = io.WriteString(opts.Stdout, partial)
+			return provider.NewError(provider.ExitTimeout, "agy timed out after %s (partial output delivered on stdout)", opts.Timeout)
+		}
+		return provider.NewError(provider.ExitTimeout, "agy timed out after %s (no output)", opts.Timeout)
 	}
 	if isAuthError(errBuf.String()) {
 		return provider.NewError(provider.ExitAuthError, "agy auth error — run `agy` once interactively to authenticate")

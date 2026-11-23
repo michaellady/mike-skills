@@ -98,6 +98,8 @@ type runMeta struct {
 	ReviewersRequested string `json:"reviewers_requested"`
 	TimeoutSec         int    `json:"timeout"`
 	DeadlineSec        int    `json:"deadline,omitempty"`
+	Level              string `json:"level,omitempty"`  // --level of the original run ("" on pre-level runs)
+	Effort             string `json:"effort,omitempty"` // --effort of the original run ("" = provider defaults)
 	PromptSHA256       string `json:"prompt_sha256"`
 	Prompt             string `json:"prompt"`
 }
@@ -118,7 +120,7 @@ func runDirFor(runID string) string { return filepath.Join(runsBaseDir(), runID)
 
 // prepareRunDir creates the run dir (0700) and writes meta.json + prompt.txt
 // before any reviewer is dispatched.
-func prepareRunDir(runID string, selected []reviewerSpec, promptPath string, timeoutSec, deadlineSec int) (string, error) {
+func prepareRunDir(runID string, selected []reviewerSpec, promptPath string, timeoutSec, deadlineSec int, level, effort string) (string, error) {
 	dir := runDirFor(runID)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
@@ -135,6 +137,8 @@ func prepareRunDir(runID string, selected []reviewerSpec, promptPath string, tim
 		ReviewersRequested: selectedNames(selected),
 		TimeoutSec:         timeoutSec,
 		DeadlineSec:        deadlineSec,
+		Level:              level,
+		Effort:             effort,
 		PromptSHA256:       promptSHA256(promptPath),
 		Prompt:             string(promptBytes),
 	}
@@ -205,6 +209,8 @@ func resumePromptPath(dir string, meta runMeta) (string, func()) {
 type resumeOpts struct {
 	timeoutSec  int
 	deadlineSec int
+	effort      string // --effort for the re-dispatch; used only when effortSet
+	effortSet   bool   // false = reuse the original run's effort (meta.json)
 	quiet       bool
 	noLedger    bool
 	label       string
@@ -244,8 +250,14 @@ func resumeRun(runID string, o resumeOpts) int {
 	fmt.Fprintf(os.Stderr, "run-id: %s\n", runID)
 	fmt.Fprintf(os.Stderr, "resume: %d/%d complete on disk, re-dispatching %d\n", len(parsed), len(selected), len(toRun))
 
-	doneCh := dispatchAndCollect(toRun, dir, promptPath, o.timeoutSec, o.deadlineSec, o.quiet, out, parsed, latency)
-	code := finalize(runID, out, parsed, selected, promptPath, o.label, o.noLedger, latency, o.start, o.quiet)
+	// Re-dispatch at the original run's effort unless --effort was passed, and
+	// keep the original level on the ledger row.
+	effort := meta.Effort
+	if o.effortSet {
+		effort = o.effort
+	}
+	doneCh := dispatchAndCollect(toRun, dir, promptPath, o.timeoutSec, o.deadlineSec, effort, o.quiet, out, parsed, latency)
+	code := finalize(runID, meta.Level, out, parsed, selected, promptPath, o.label, o.noLedger, latency, o.start, o.quiet)
 	waitGrace(doneCh)
 	return code
 }
@@ -318,7 +330,7 @@ func recoverRun(runID string, o recoverOpts) int {
 		out.Skipped[r.name] = "unrecoverable (no persisted output or transcript)"
 	}
 
-	return finalize(runID, out, parsed, selected, promptPath, o.label, o.noLedger, latency, o.start, o.quiet)
+	return finalize(runID, meta.Level, out, parsed, selected, promptPath, o.label, o.noLedger, latency, o.start, o.quiet)
 }
 
 // recoverFromTranscript locates the reviewer's own CLI transcript and extracts
