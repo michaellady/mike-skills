@@ -42,7 +42,8 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 		return provider.NewError(provider.ExitBadArgs, "agy CLI not on PATH")
 	}
 	if opts.Timeout == 0 {
-		opts.Timeout = 5 * time.Minute
+		// xhigh-effort Gemini reviews measured ~10 min; 5 min timed out.
+		opts.Timeout = 15 * time.Minute
 		if v := os.Getenv("CONVERGE_AGY_TIMEOUT"); v != "" {
 			if n, err := strconv.Atoi(v); err == nil {
 				opts.Timeout = time.Duration(n) * time.Second
@@ -74,7 +75,22 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) error {
 
 	// `agy --print <prompt>` runs a single prompt non-interactively and prints
 	// the response to stdout. Reviews retain permissions and sandbox protection.
-	args := []string{"--print", string(prompt), "--mode", "plan", "--sandbox"}
+	//
+	// Headless agy cannot prompt for tool permission: the first shell command it
+	// tries is auto-denied and the whole turn then ends with an EMPTY response
+	// ("a tool required the \"command\" permission ..."), which surfaced here as
+	// ExitNoFinalMsg on every real review. Two guards, neither of which widens
+	// what the reviewer may do:
+	//   1. headlessPreamble tells the model not to call the shell at all and to
+	//      answer from the prompt (plus a few file reads).
+	//   2. A session-only allowlist (--settings, never saved) of read-only
+	//      inspection commands, so a stray `ls`/`git status` is not fatal.
+	// Set CONVERGE_AGY_NO_PREAMBLE=1 to send the prompt verbatim.
+	body := string(prompt)
+	if os.Getenv("CONVERGE_AGY_NO_PREAMBLE") == "" {
+		body = headlessPreamble + body
+	}
+	args := []string{"--print", body, "--mode", "plan", "--sandbox", "--settings", readOnlySettings}
 	// Model selection: explicit opts.Model > $CONVERGE_AGY_MODEL > agy's own session
 	// default. The id form (e.g. "gemini-3.1-pro-high") is stable; `agy models` lists them.
 	model := opts.Model
@@ -153,3 +169,12 @@ func isAuthError(stderr string) bool {
 	}
 	return false
 }
+
+// headlessPreamble is prepended to every prompt sent to agy in print mode.
+const headlessPreamble = `HEADLESS REVIEW RULES (these override any habit of exploring the repository): You are running non-interactively. Do NOT call run_command or any shell tool at all: in this mode a single denied command aborts the whole run with no output. The complete artifact under review is included in this prompt. You may call read_file at most 4 times if you must check a specific cited file. Do not build, test, install, or write anything. Then give your final answer; a run that ends without one is a failure.
+
+`
+
+// readOnlySettings is passed via --settings (session-only). It allowlists
+// read-only inspection commands so one of them does not abort a headless run.
+const readOnlySettings = `{"permissions":{"allow":["command(git status)","command(git diff)","command(git log)","command(git show)","command(git ls-files)","command(git grep)","command(ls)","command(find)","command(cat)","command(head)","command(tail)","command(sed -n)","command(wc)","command(grep)","command(rg)","command(echo)","command(true)"]}}`
