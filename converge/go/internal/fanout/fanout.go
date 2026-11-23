@@ -1,6 +1,6 @@
 // Package fanout dispatches the SAME prompt to every selected reviewer CLI in
 // parallel (claude, muse, codex, agy, composer-2.5, grok-build, kimi, glm
-// by default; bare agent opt-in), parses each
+// by default), parses each
 // reviewer's JSON verdict, and emits a merged canonical response. This is the
 // "adversarial review" audit capability — fresh-eyes, single-shot, FAIL-OR —
 // folded into converge from the former standalone adversarial-review skill.
@@ -198,7 +198,6 @@ var registeredReviewers = []reviewerSpec{
 	// re-dispatch, non-recoverable from transcript like agy).
 	{name: "muse", cli: "muse", make: func() provider.Provider { return muse.New() }},
 	{name: "codex", cli: "codex", make: func() provider.Provider { return codex.New() }},
-	{name: "agent", cli: "agent", make: func() provider.Provider { return agent.New() }},
 	// composer-2.5 and grok-build are Cursor `agent` CLI *models*, not separate
 	// binaries — same `agent` provider, pinned via --model. cli stays "agent"
 	// (PATH check), and runProvider keys its thread temp-file on `name` (not
@@ -206,14 +205,16 @@ var registeredReviewers = []reviewerSpec{
 	{name: "composer-2.5", cli: "agent", model: "composer-2.5", make: func() provider.Provider { return agent.New() }},
 	// Keep the stable reviewer name for ledger history. The model was verified
 	// against this account's Cursor subscription on 2026-11-03.
-	{name: "grok-build", cli: "agent", model: "grok-4.7-xhigh", make: func() provider.Provider { return agent.New() }},
+	{name: "grok-build", cli: "agent", model: "grok-4.7-medium", make: func() provider.Provider { return agent.New() }},
 	// The provider selects the verified Gemini default while honoring overrides.
 	{name: "agy", cli: "agy", make: func() provider.Provider { return agy.New() }},
-	// The top OPEN-WEIGHTS families on Cursor's roster (2026-07): Moonshot's Kimi and
-	// Zhipu's GLM, each pinned to its strongest listed variant. Open models fail in
+	// Additional open-weight perspectives on Cursor: Moonshot's Kimi and
+	// Zhipu's GLM, pinned below max where medium is unavailable. Open models fail in
 	// different ways than the frontier labs' — cheap extra diversity for the audit panel.
-	{name: "kimi", cli: "agent", model: "kimi-k3-max", make: func() provider.Provider { return agent.New() }},
-	{name: "glm", cli: "agent", model: "glm-5.2-max", make: func() provider.Provider { return agent.New() }},
+	// Cursor exposes no medium effort for these two families. Preserve their
+	// perspectives at the lowest listed, live-probed variant instead of max.
+	{name: "kimi", cli: "agent", model: "kimi-k3-low", make: func() provider.Provider { return agent.New() }},
+	{name: "glm", cli: "agent", model: "glm-5.2-high", make: func() provider.Provider { return agent.New() }},
 }
 
 // defaultReviewers is the comma-separated default for --reviewers.
@@ -224,8 +225,8 @@ var registeredReviewers = []reviewerSpec{
 // from the frontier labs. composer-2.5, grok-build, kimi, and glm run via
 // the Cursor `agent` CLI and need a paid Cursor plan — on a free/low-tier plan
 // they quota-fail and land under `skipped`, so including them by default is
-// safe (they simply don't contribute when unavailable). The bare `agent`
-// provider stays OPT-IN to avoid a redundant `auto`-model run alongside these.
+// safe (they simply don't contribute when unavailable). There is no generic
+// `agent` audit reviewer; select a named family instead of duplicating Claude.
 //
 // Per-reviewer failures degrade gracefully: a reviewer that quota-fails,
 // auth-fails, or times out is reported under `skipped` (see unavailableReason),

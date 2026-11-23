@@ -291,7 +291,7 @@ func TestSelectReviewers_Default(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Default = the six frontier-family reviewers + the two open-weights
-	// families (kimi, glm); the bare `agent` provider stays opt-in.
+	// families (kimi, glm); no duplicate generic Cursor reviewer.
 	want := []string{"claude", "muse", "codex", "agy", "composer-2.5", "grok-build", "kimi", "glm"}
 	if len(got) != len(want) {
 		t.Fatalf("default should be %v, got %d items", want, len(got))
@@ -303,7 +303,7 @@ func TestSelectReviewers_Default(t *testing.T) {
 	}
 	for _, r := range got {
 		if r.name == "agent" {
-			t.Fatalf("agent must NOT be in the default selection (opt-in only)")
+			t.Fatalf("duplicate agent reviewer must not be selected")
 		}
 	}
 }
@@ -315,12 +315,12 @@ func TestSelectReviewers_RemovedGPTOSS(t *testing.T) {
 }
 
 func TestSelectReviewers_CursorModels(t *testing.T) {
-	got, err := selectReviewers("composer-2.5,grok-build")
+	got, err := selectReviewers("composer-2.5,grok-build,kimi,glm")
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Both route through the Cursor `agent` CLI, pinned to distinct models.
-	want := map[string]string{"composer-2.5": "composer-2.5", "grok-build": "grok-4.7-xhigh"}
+	want := map[string]string{"composer-2.5": "composer-2.5", "grok-build": "grok-4.7-medium", "kimi": "kimi-k3-low", "glm": "glm-5.2-high"}
 	if len(got) != len(want) {
 		t.Fatalf("want %d reviewers, got %d", len(want), len(got))
 	}
@@ -334,13 +334,9 @@ func TestSelectReviewers_CursorModels(t *testing.T) {
 	}
 }
 
-func TestSelectReviewers_OptInAgent(t *testing.T) {
-	got, err := selectReviewers("claude,codex,agent")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 3 || got[2].name != "agent" {
-		t.Fatalf("want agent included, got %#v", got)
+func TestSelectReviewers_NoDuplicateCursorClaude(t *testing.T) {
+	if _, err := selectReviewers("claude,codex,agent"); err == nil {
+		t.Fatal("generic Cursor reviewer must be rejected; select Composer explicitly")
 	}
 }
 
@@ -355,11 +351,11 @@ func TestSelectReviewers_Agy(t *testing.T) {
 }
 
 func TestSelectReviewers_AllFour(t *testing.T) {
-	got, err := selectReviewers("claude,codex,agent,agy")
+	got, err := selectReviewers("claude,codex,composer-2.5,agy")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"claude", "codex", "agent", "agy"}
+	want := []string{"claude", "codex", "composer-2.5", "agy"}
 	if len(got) != 4 {
 		t.Fatalf("want 4 reviewers, got %d", len(got))
 	}
