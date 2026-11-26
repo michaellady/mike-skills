@@ -68,3 +68,10 @@ func (e *Error) Unwrap() error { return e.Err }
 func NewError(code int, format string, args ...any) error {
 	return &Error{Code: code, Err: fmt.Errorf(format, args...)}
 }
+
+// MaxArgvPrompt is the largest prompt, in bytes, that providers pass as a
+// command-line argument. Linux limits a single argv entry to 128 KiB
+// (MAX_ARG_STRLEN) and exec fails with "argument list too long" beyond it, so
+// providers whose CLI can read the prompt from stdin switch to stdin above
+// this size.
+const MaxArgvPrompt = 100_000

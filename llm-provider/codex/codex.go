@@ -6,6 +6,7 @@ package codex
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -91,6 +92,13 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) (retErr error) 
 		model = "gpt-6-astra"
 	}
 
+	// A prompt too long for one argv entry (Linux caps a single argument at
+	// 128 KiB) is passed as "-", which makes codex read it from stdin.
+	viaStdin := len(prompt) > provider.MaxArgvPrompt
+	promptArg := string(prompt)
+	if viaStdin {
+		promptArg = "-"
+	}
 	args := []string{"exec"}
 	opts.Model = model
 	if opts.ResumeID != "" {
@@ -98,7 +106,7 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) (retErr error) 
 	}
 	args = append(args,
 		"--skip-git-repo-check",
-		string(prompt),
+		promptArg,
 	)
 	// `-s/--sandbox` is exec-fresh-only; `codex exec resume` inherits sandbox
 	// from the original session and rejects -s with "unexpected argument '-s'".
@@ -119,6 +127,9 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) (retErr error) 
 
 	cmd := exec.CommandContext(cctx, "codex", args...)
 	cmd.Stdin = nil
+	if viaStdin {
+		cmd.Stdin = bytes.NewReader(prompt)
+	}
 	// Kill codex's whole process group (not just the direct pid) on cancellation,
 	// and bound cmd.Wait() so a straggler can't orphan past the fan-out's merge.
 	harden(cmd)

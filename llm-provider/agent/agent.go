@@ -8,6 +8,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -103,13 +104,22 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) (retErr error) 
 	if opts.ResumeID != "" {
 		args = append(args, "--resume", opts.ResumeID)
 	}
-	args = append(args, string(prompt))
+	// A prompt too long for one argv entry (Linux caps a single argument at
+	// 128 KiB) goes on stdin, which `agent --print` reads when no prompt
+	// argument is given.
+	viaStdin := len(prompt) > provider.MaxArgvPrompt
+	if !viaStdin {
+		args = append(args, string(prompt))
+	}
 
 	cctx, cancel := context.WithTimeout(ctx, opts.Timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(cctx, "agent", args...)
 	cmd.Stdin = nil
+	if viaStdin {
+		cmd.Stdin = bytes.NewReader(prompt)
+	}
 
 	var outBuf, errBuf strings.Builder
 	cmd.Stdout = &outBuf
