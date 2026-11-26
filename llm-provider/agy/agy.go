@@ -100,7 +100,7 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) (retErr error) 
 		model = os.Getenv("CONVERGE_AGY_MODEL")
 	}
 	if model == "" {
-		model = "gemini-4-argon-medium"
+		model = "gemini-4-neon-medium"
 	}
 	if model != "" {
 		opts.Model = model
