@@ -7,6 +7,7 @@ package claude
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/json"
@@ -110,14 +111,21 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) (retErr error) 
 		"--model", model,
 		"--effort", effort,
 	)
-	// Prompt is positional after flags.
-	args = append(args, string(prompt))
+	// Prompt is positional after flags, unless it is too long for one argv
+	// entry (Linux caps a single argument at 128 KiB); then it goes on stdin.
+	viaStdin := len(prompt) > provider.MaxArgvPrompt
+	if !viaStdin {
+		args = append(args, string(prompt))
+	}
 
 	cctx, cancel := context.WithTimeout(ctx, opts.Timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(cctx, "claude", args...)
 	cmd.Stdin = nil
+	if viaStdin {
+		cmd.Stdin = bytes.NewReader(prompt)
+	}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

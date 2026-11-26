@@ -89,6 +89,12 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) (retErr error) 
 	//      inspection commands, so a stray `ls`/`git status` is not fatal.
 	// Set CONVERGE_AGY_NO_PREAMBLE=1 to send the prompt verbatim.
 	body := string(prompt)
+	// agy print mode takes the prompt only as an argument; one argv entry is
+	// capped at 128 KiB on Linux, so fail with a clear message instead of an
+	// opaque exec error.
+	if len(body) > 120_000 {
+		return provider.NewError(provider.ExitBadArgs, "prompt is %d bytes; agy accepts it only as a command-line argument, which is limited to about 128 KiB", len(body))
+	}
 	if os.Getenv("CONVERGE_AGY_NO_PREAMBLE") == "" {
 		body = headlessPreamble + body
 	}
@@ -100,7 +106,7 @@ func (*Provider) Run(ctx context.Context, opts provider.Options) (retErr error) 
 		model = os.Getenv("CONVERGE_AGY_MODEL")
 	}
 	if model == "" {
-		model = "gemini-4-argon-medium"
+		model = "gemini-4-neon-medium"
 	}
 	if model != "" {
 		opts.Model = model
